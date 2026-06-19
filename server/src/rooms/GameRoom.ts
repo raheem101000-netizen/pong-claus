@@ -160,25 +160,39 @@ export class GameRoom extends Room {
       }
       return null;
     }
-    b.x += b.vx; b.y += b.vy;
-    if (b.x - BALL_R < 0)  { b.x = BALL_R;     b.vx =  Math.abs(b.vx); }
-    if (b.x + BALL_R > W)  { b.x = W - BALL_R; b.vx = -Math.abs(b.vx); }
-    this.hitPaddle(s.p1, true);
-    this.hitPaddle(s.p2, false);
+    // Sub-step so the ball never moves more than PADDLE_SHORT px per iteration.
+    // Guarantees crossed-check fires even at SPEED_MAX.
+    const steps = Math.max(1, Math.ceil(Math.abs(b.vy) / PADDLE_SHORT));
+    const sx = b.vx / steps;
+    const sy = b.vy / steps;
+    for (let i = 0; i < steps; i++) {
+      const prevY = b.y;
+      b.x += sx; b.y += sy;
+      if (b.x - BALL_R < 0)  { b.x = BALL_R;     b.vx =  Math.abs(b.vx); }
+      if (b.x + BALL_R > W)  { b.x = W - BALL_R; b.vx = -Math.abs(b.vx); }
+      if (this.hitPaddle(s.p1, true,  prevY)) break;
+      if (this.hitPaddle(s.p2, false, prevY)) break;
+      if (b.y > H + 20) { s.p2.score++; this.resetBall(false); return this.checkScore(); }
+      if (b.y < -20)    { s.p1.score++; this.resetBall(true);  return this.checkScore(); }
+    }
     if (b.y > H + 20) { s.p2.score++; this.resetBall(false); return this.checkScore(); }
     if (b.y < -20)    { s.p1.score++; this.resetBall(true);  return this.checkScore(); }
     return null;
   }
 
-  private hitPaddle(p: PaddleState, isP1: boolean) {
+  // Returns true if a collision occurred (caller should stop sub-stepping).
+  private hitPaddle(p: PaddleState, isP1: boolean, prevY: number): boolean {
     const b = this.gs!.ball;
-    const prevY = b.y - b.vy;
     const hitX = b.x + BALL_R > p.x - FORGIVE && b.x - BALL_R < p.x + PADDLE_LONG + FORGIVE;
     const hitYNow = b.y + BALL_R > p.y && b.y - BALL_R < p.y + PADDLE_SHORT;
+    // paddleY is the edge the ball must cross: top edge for P1, bottom edge for P2.
     const paddleY = isP1 ? p.y : p.y + PADDLE_SHORT;
+    // Swept check: did the relevant ball edge cross the paddle's contact edge this step?
+    // P1 (bottom paddle): ball approaches from above → bottom edge (b.y+BALL_R) crosses p.y downward.
+    // P2 (top paddle):    ball approaches from below → top edge (b.y-BALL_R) crosses p.y+SHORT upward.
     const crossed = isP1
-      ? (prevY - BALL_R > paddleY && b.y - BALL_R <= paddleY)
-      : (prevY + BALL_R < paddleY && b.y + BALL_R >= paddleY);
+      ? (prevY + BALL_R < paddleY && b.y + BALL_R >= paddleY)
+      : (prevY - BALL_R > paddleY && b.y - BALL_R <= paddleY);
     if (hitX && (hitYNow || crossed)) {
       const rel = (b.x - (p.x + PADDLE_LONG / 2)) / (PADDLE_LONG / 2);
       const clamped = Math.max(-1, Math.min(1, rel));
@@ -186,7 +200,9 @@ export class GameRoom extends Room {
       b.vx = Math.sin(clamped * (Math.PI / 4)) * spd;
       b.vy = Math.cos(clamped * (Math.PI / 4)) * spd * (isP1 ? -1 : 1);
       b.y = isP1 ? p.y - BALL_R - 1 : p.y + PADDLE_SHORT + BALL_R + 1;
+      return true;
     }
+    return false;
   }
 
   private resetBall(towardsP1: boolean) {
