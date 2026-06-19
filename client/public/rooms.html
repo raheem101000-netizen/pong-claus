@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PONG — Rooms</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{width:100%;min-height:100%;background:#0d0d1a;color:#fff;font-family:'Space Grotesk',sans-serif;}
+
+/* NAV */
+.nav{display:flex;align-items:center;justify-content:space-between;padding:14px 32px;border-bottom:1px solid rgba(255,255,255,0.07);background:#080812;}
+.nav-logo{font-size:20px;letter-spacing:8px;font-weight:300;}
+.nav-right{font-size:11px;color:rgba(255,255,255,0.25);letter-spacing:2px;}
+
+/* NAME BAR */
+.name-bar{display:flex;align-items:center;gap:10px;padding:10px 32px;background:#0a0a16;border-bottom:1px solid rgba(255,255,255,0.05);}
+.name-bar label{font-size:11px;color:rgba(255,255,255,0.3);letter-spacing:1px;}
+.name-input{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:#fff;padding:7px 14px;font-size:13px;font-family:'Space Grotesk',sans-serif;border-radius:8px;outline:none;width:180px;}
+.name-input:focus{border-color:rgba(180,80,255,0.5);}
+.btn-purple{background:#b450ff;color:#fff;border:none;padding:8px 18px;font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:600;border-radius:8px;cursor:pointer;}
+.btn-purple:hover{opacity:0.85;}
+
+/* CONTAINER */
+.container{max-width:900px;margin:0 auto;padding:32px 24px;}
+
+/* ROOM LIST HEADER */
+.room-list-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;}
+.room-list-header h2{font-size:18px;font-weight:500;color:rgba(255,255,255,0.7);}
+.room-list-header h2.empty{color:rgba(255,255,255,0.3);}
+
+/* ROOMS TABLE */
+#rooms-table{width:100%;border-collapse:collapse;margin-bottom:32px;}
+#rooms-table tbody tr{border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;transition:background 0.1s;}
+#rooms-table tbody tr:hover{background:rgba(255,255,255,0.03);}
+#rooms-table tbody td{padding:14px 16px;font-size:14px;color:rgba(255,255,255,0.6);}
+td.room-name{color:#fff;font-weight:500;}
+td.room-players{font-size:13px;}
+td.room-enter{text-align:right;}
+.room-enter-btn{display:inline-flex;align-items:center;gap:6px;background:rgba(180,80,255,0.15);border:1px solid rgba(180,80,255,0.4);color:#b450ff;padding:7px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.15s;}
+.room-enter-btn:hover{background:rgba(180,80,255,0.25);border-color:#b450ff;}
+.room-enter-btn.spectate{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.15);color:rgba(255,255,255,0.4);}
+#rooms-empty{padding:48px 0;text-align:center;color:rgba(255,255,255,0.2);font-size:14px;line-height:2.2;}
+
+/* JOIN BY CODE */
+.join-code-section{display:flex;gap:10px;align-items:center;margin-bottom:32px;}
+.join-code-section label{font-size:12px;color:rgba(255,255,255,0.3);letter-spacing:1px;white-space:nowrap;}
+.code-input{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:#fff;padding:9px 16px;font-size:18px;font-family:monospace;border-radius:8px;outline:none;width:120px;letter-spacing:8px;text-align:center;}
+.code-input:focus{border-color:rgba(180,80,255,0.5);}
+.btn-outline{background:transparent;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.5);padding:9px 18px;font-family:'Space Grotesk',sans-serif;font-size:13px;border-radius:8px;cursor:pointer;transition:all 0.15s;}
+.btn-outline:hover{border-color:rgba(255,255,255,0.4);color:#fff;}
+
+/* ROOM DETAIL */
+#room-detail{display:none;}
+.room-detail-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;}
+.room-detail-header h2{font-size:22px;font-weight:600;}
+.room-code-wrap{text-align:right;}
+.room-code-label{font-size:10px;color:rgba(255,255,255,0.3);letter-spacing:2px;margin-bottom:4px;}
+.room-code-val{font-size:32px;font-weight:700;font-family:monospace;color:#b450ff;letter-spacing:10px;}
+
+/* START BTN */
+.btn-start-now{background:#b450ff;color:#fff;border:none;padding:12px 28px;font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:700;border-radius:10px;cursor:pointer;margin-bottom:24px;display:none;}
+.btn-start-now:not(:disabled){background:#b450ff;}
+.btn-start-now:disabled{background:rgba(180,80,255,0.2);color:rgba(255,255,255,0.3);cursor:not-allowed;}
+
+/* PLAYERS TABLE */
+.players-count{font-size:14px;color:rgba(255,255,255,0.4);margin-bottom:12px;}
+#players-table{width:100%;border-collapse:collapse;margin-bottom:24px;}
+#players-table thead th{font-size:11px;color:rgba(255,255,255,0.25);letter-spacing:2px;padding:8px 12px;text-align:left;border-bottom:1px solid rgba(255,255,255,0.07);font-weight:500;}
+#players-table tbody td{padding:12px 12px;font-size:14px;border-bottom:1px solid rgba(255,255,255,0.04);}
+.p-color-dot{width:12px;height:12px;border-radius:50%;display:inline-block;margin-right:8px;vertical-align:middle;}
+.p-name-cell{color:#fff;}
+.p-ready-cell{text-align:right;}
+.ready-badge{font-size:11px;padding:4px 12px;border-radius:6px;font-weight:600;letter-spacing:1px;}
+.ready-yes{background:rgba(76,255,108,0.15);color:#4CFF6C;}
+.ready-no{background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.3);}
+.ready-host{background:rgba(180,80,255,0.15);color:#b450ff;}
+.p-empty{color:rgba(255,255,255,0.2);font-style:italic;padding:16px 12px;}
+
+/* CHAT */
+.chat-wrap{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;overflow:hidden;margin-bottom:20px;}
+.chat-msgs{height:160px;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:6px;}
+.chat-line{font-size:13px;color:rgba(255,255,255,0.4);}
+.chat-author{color:rgba(255,255,255,0.6);font-weight:500;}
+.chat-sys{color:rgba(255,255,255,0.2);font-style:italic;}
+.chat-form{display:flex;gap:8px;padding:10px 14px;border-top:1px solid rgba(255,255,255,0.06);}
+.chat-form input{flex:1;background:transparent;border:none;color:#fff;font-size:13px;font-family:'Space Grotesk',sans-serif;outline:none;}
+.chat-form input::placeholder{color:rgba(255,255,255,0.2);}
+
+/* ACTIONS */
+.room-actions{display:flex;gap:10px;align-items:center;}
+.btn-ready{background:#4CFF6C;color:#111;border:none;padding:10px 24px;font-family:'Space Grotesk',sans-serif;font-size:14px;font-weight:700;border-radius:8px;cursor:pointer;display:none;}
+.btn-ready:hover{background:#2ecc71;}
+.btn-ready.is-ready{background:rgba(76,255,108,0.15);color:#4CFF6C;cursor:default;}
+.btn-leave{background:transparent;border:1px solid rgba(255,68,68,0.3);color:rgba(255,68,68,0.6);padding:10px 18px;font-family:'Space Grotesk',sans-serif;font-size:13px;border-radius:8px;cursor:pointer;}
+.btn-leave:hover{border-color:#ff4444;color:#ff4444;}
+.ready-status{font-size:12px;color:rgba(255,255,255,0.25);margin-left:auto;letter-spacing:1px;}
+
+/* STATUS */
+#statusbar{position:fixed;bottom:0;left:0;right:0;padding:8px 32px;font-size:11px;color:rgba(255,255,255,0.2);letter-spacing:1px;background:#080812;border-top:1px solid rgba(255,255,255,0.05);}
+#statusbar.ok{color:#4CFF6C;}
+#statusbar.err{color:#ff4444;}
+
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:99999;display:none;align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal{background:#0d0d1a;border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:32px;width:340px;max-width:92vw;}
+.modal h3{color:#fff;font-size:18px;font-weight:700;margin-bottom:22px;}
+.modal-field{margin-bottom:16px;}
+.modal-field label{font-size:11px;color:rgba(255,255,255,0.3);letter-spacing:1px;display:block;margin-bottom:6px;}
+.modal-field input{width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:10px 14px;font-family:'Space Grotesk',sans-serif;font-size:14px;outline:none;}
+.modal-field input:focus{border-color:rgba(255,255,255,0.3);}
+.modal-field input::placeholder{color:rgba(255,255,255,0.3);}
+.toggle-row{display:flex;gap:8px;}
+.toggle-btn{flex:1;padding:9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.5);cursor:pointer;font-family:'Space Grotesk',sans-serif;font-size:12px;font-weight:600;transition:all 0.15s;}
+.toggle-btn.active{background:rgba(180,80,255,0.2);border-color:#b450ff;color:#b450ff;}
+.modal-actions{display:flex;gap:10px;margin-top:24px;}
+.modal-submit{flex:1;padding:11px 0;background:#b450ff;color:#fff;border:none;border-radius:8px;font-family:'Space Grotesk',sans-serif;font-size:14px;font-weight:600;cursor:pointer;}
+.modal-submit:disabled{opacity:0.35;cursor:not-allowed;}
+.modal-cancel{padding:11px 18px;background:transparent;color:rgba(255,255,255,0.45);border:1px solid rgba(255,255,255,0.15);border-radius:8px;font-family:'Space Grotesk',sans-serif;font-size:14px;font-weight:600;cursor:pointer;}
+
+@media(max-width:600px){.container{padding:20px 14px;}.room-detail-header{flex-direction:column;align-items:flex-start;gap:10px;}}
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <div class="nav-logo">PONG</div>
+  <div class="nav-right">MULTIPLAYER LOBBY</div>
+</div>
+
+<div class="name-bar">
+  <label>YOUR NAME</label>
+  <input class="name-input" id="name-input" type="text" maxlength="12" placeholder="Enter your name..." autocomplete="off"/>
+  <button class="btn-purple" id="btn-setname">Set Name</button>
+</div>
+
+<div class="container">
+
+  <!-- ROOM LIST VIEW -->
+  <div id="list-view">
+    <div class="room-list-header">
+      <h2 id="list-heading" class="empty">Start by creating a room:</h2>
+      <button class="btn-purple" id="btn-create">+ Create Room</button>
+    </div>
+
+    <table id="rooms-table">
+      <tbody id="rooms-tbody"></tbody>
+    </table>
+    <div id="rooms-empty">No open rooms yet.<br>Create one and share the code with your opponent.</div>
+
+    <div class="join-code-section">
+      <label>JOIN BY CODE</label>
+      <input class="code-input" id="code-input" type="text" maxlength="4" placeholder="----" autocomplete="off"/>
+      <button class="btn-outline" id="btn-joincode">Join →</button>
+    </div>
+  </div>
+
+  <!-- ROOM DETAIL VIEW -->
+  <div id="room-detail">
+    <div class="room-detail-header">
+      <h2 id="rh-name">Room</h2>
+      <div class="room-code-wrap">
+        <div class="room-code-label">ROOM CODE</div>
+        <div class="room-code-val" id="room-code-val">----</div>
+      </div>
+    </div>
+
+    <button class="btn-start-now" id="btn-start">Start now!</button>
+    <button class="btn-ready" id="btn-ready">Ready?</button>
+
+    <p class="players-count" id="players-count">No players</p>
+
+    <table id="players-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>NAME</th>
+          <th style="text-align:right">READY?</th>
+        </tr>
+      </thead>
+      <tbody id="players-tbody"></tbody>
+    </table>
+
+    <div class="chat-wrap">
+      <div class="chat-msgs" id="chat-msgs"></div>
+      <div class="chat-form">
+        <input id="chat-input" type="text" placeholder="Say something..." maxlength="80" autocomplete="off"/>
+        <button class="btn-outline" id="btn-chat">Send</button>
+      </div>
+    </div>
+
+    <div class="room-actions">
+      <button class="btn-leave" id="btn-leave">← Back to rooms</button>
+      <span class="ready-status" id="ready-status"></span>
+    </div>
+  </div>
+
+</div>
+
+<div id="statusbar">Connecting...</div>
+
+<!-- CREATE MODAL -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <h3>Create a Room</h3>
+    <div class="modal-field">
+      <input id="modal-name" type="text" maxlength="24" placeholder="Room name..." autocomplete="off"/>
+    </div>
+    <div class="modal-field">
+      <label>VISIBILITY</label>
+      <div class="toggle-row">
+        <button class="toggle-btn active" id="toggle-public">🌐 Public</button>
+        <button class="toggle-btn" id="toggle-private">🔒 Private</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-submit" id="btn-modal-confirm">Start Room</button>
+      <button class="modal-cancel" id="btn-modal-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script src="/colyseus-adapter.js"></script>
+<script>
+const socket = io();
+const COLORS = ['#b450ff','#4488FF'];
+let myName = localStorage.getItem('pong_name') || '';
+let myRoom = null, isMaster = false, isReady = false, roomIsPublic = true;
+if (myName) document.getElementById('name-input').value = myName;
+
+function status(msg, type) { const el=document.getElementById('statusbar'); el.textContent=msg; el.className=type||''; }
+function showList() { document.getElementById('list-view').style.display='block'; document.getElementById('room-detail').style.display='none'; }
+function showDetail() { document.getElementById('list-view').style.display='none'; document.getElementById('room-detail').style.display='block'; }
+
+document.getElementById('btn-setname').onclick = setName;
+document.getElementById('name-input').addEventListener('keydown', e=>{ if(e.key==='Enter') setName(); });
+function setName() { const v=document.getElementById('name-input').value.trim(); if(!v) return; myName=v; localStorage.setItem('pong_name',myName); status('Name set: '+myName,'ok'); }
+
+socket.on('connect', ()=>{ status('Connected','ok'); socket.emit('room:list'); });
+socket.on('disconnect', ()=>status('Disconnected','err'));
+socket.on('connect_error', ()=>status('Cannot connect to server','err'));
+socket.on('room:error', ({message})=>status(message,'err'));
+
+socket.on('room:list', ({rooms})=>renderRoomList(rooms));
+socket.on('room:open',   ()=>socket.emit('room:list'));
+socket.on('room:close',  ()=>socket.emit('room:list'));
+socket.on('room:update', ()=>socket.emit('room:list'));
+
+socket.on('room:created', ({room})=>{ myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status('Room created — code: '+room.code,'ok'); });
+socket.on('room:joined',  ({room})=>{ myRoom=room; isMaster=false; isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); });
+socket.on('room:state',   room=>{ myRoom=room; renderPlayers(room); updateActions(); });
+socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); status(player.name+' joined','ok'); });
+socket.on('room:player:leave', ()=>{ sysMsg('A player left'); updateActions(); });
+socket.on('room:player:ready', ({player})=>status(player.name+' is ready!','ok'));
+socket.on('room:master', ({master})=>{ if(master===socket.id){ isMaster=true; updateActions(); status('You are now host','ok'); } });
+socket.on('room:talk', ({player,content})=>addMsg(player,content));
+socket.on('room:game:start', ({code})=>{ status('Game starting!','ok'); setTimeout(()=>{ window.location.href='/pong-multiplayer.html?room='+code+'&name='+encodeURIComponent(myName); },600); });
+
+function renderRoomList(rooms) {
+  const tbody=document.getElementById('rooms-tbody');
+  const empty=document.getElementById('rooms-empty');
+  const heading=document.getElementById('list-heading');
+  tbody.innerHTML='';
+  const open=rooms.filter(r=>r.open||true); // show all rooms
+  empty.style.display=open.length?'none':'block';
+  if(open.length===0) { heading.textContent='Start by creating a room:'; heading.className='empty'; }
+  else if(open.length===1) { heading.textContent='You can join 1 room!'; heading.className=''; }
+  else { heading.textContent='You can join '+open.length+' rooms!'; heading.className=''; }
+  open.forEach((r,i)=>{
+    const tr=document.createElement('tr');
+    const full=r.players>=2;
+    tr.innerHTML=`
+      <td class="room-name">${r.name}${!r.open?' 🔒':''}</td>
+      <td class="room-players">${r.players} player${r.players!==1?'s':''}</td>
+      <td class="room-enter">
+        ${full
+          ? '<button class="room-enter-btn spectate" disabled>In Game</button>'
+          : `<button class="room-enter-btn" onclick="joinRoom('${r.id}')">Join</button>`}
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function joinRoom(id) {
+  if(!myName){ status('Set your name first','err'); return; }
+  socket.emit('room:join',{room:id, playerName:myName});
+}
+
+function renderDetail(room) {
+  document.getElementById('rh-name').textContent=room.name;
+  document.getElementById('room-code-val').textContent=room.code;
+  renderPlayers(room); updateActions();
+}
+
+function renderPlayers(room) {
+  const tbody=document.getElementById('players-tbody');
+  tbody.innerHTML='';
+  const players=room.players||[];
+  const count=document.getElementById('players-count');
+  count.textContent=players.length===0?'No players':players.length===1?'1 player':''+players.length+' players';
+  players.forEach((p,i)=>{
+    const tr=document.createElement('tr');
+    const isMe=p.id===socket.id;
+    const badge=p.master
+      ?'<span class="ready-badge ready-host">HOST</span>'
+      :p.ready
+        ?'<span class="ready-badge ready-yes">✓ Ready</span>'
+        :'<span class="ready-badge ready-no">Not ready</span>';
+    tr.innerHTML=`
+      <td><span class="p-color-dot" style="background:${COLORS[i]||'#fff'}"></span></td>
+      <td class="p-name-cell">${p.name}${isMe?' <span style="color:rgba(255,255,255,0.3);font-size:11px;">(you)</span>':''}</td>
+      <td class="p-ready-cell">${badge}</td>`;
+    tbody.appendChild(tr);
+  });
+  if(players.length<2){
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td colspan="3" class="p-empty">Waiting for opponent...</td>';
+    tbody.appendChild(tr);
+  }
+  const readyCount=players.filter(p=>p.ready).length;
+  document.getElementById('ready-status').textContent=readyCount+'/2 ready';
+}
+
+function updateActions() {
+  const btnReady=document.getElementById('btn-ready');
+  const btnStart=document.getElementById('btn-start');
+  if(!myRoom) return;
+  btnStart.style.display=isMaster?'inline-block':'none';
+  btnReady.style.display=(!isMaster)?'inline-block':'none';
+  const players=myRoom.players||[];
+  // Host can start as long as opponent is present and ready
+  const guestReady=players.filter(p=>!p.master).every(p=>p.ready);
+  const hasGuest=players.length===2;
+  btnStart.disabled=!(hasGuest && guestReady);
+  if(isReady){ btnReady.textContent='✓ Ready!'; btnReady.classList.add('is-ready'); }
+  else { btnReady.textContent='Ready?'; btnReady.classList.remove('is-ready'); }
+}
+
+function addMsg(player,content){ const box=document.getElementById('chat-msgs'); const d=document.createElement('div'); d.className='chat-line'; d.innerHTML=`<span class="chat-author">${player}:</span> ${content}`; box.appendChild(d); box.scrollTop=box.scrollHeight; }
+function sysMsg(text){ const box=document.getElementById('chat-msgs'); const d=document.createElement('div'); d.className='chat-line'; d.innerHTML=`<span class="chat-sys">· ${text}</span>`; box.appendChild(d); box.scrollTop=box.scrollHeight; }
+
+document.getElementById('btn-chat').onclick=sendChat;
+document.getElementById('chat-input').addEventListener('keydown',e=>{ if(e.key==='Enter') sendChat(); });
+function sendChat(){ const inp=document.getElementById('chat-input'); const content=inp.value.trim(); if(!content||!myRoom) return; socket.emit('room:talk',{content}); inp.value=''; }
+
+document.getElementById('btn-ready').onclick=()=>{
+  if(!myName){status('Set your name first','err');return;}
+  if(isReady) return;
+  isReady=true; socket.emit('room:ready'); updateActions();
+};
+
+document.getElementById('btn-start').onclick=()=>{
+  const players=myRoom?.players||[];
+  const guestReady=players.filter(p=>!p.master).every(p=>p.ready);
+  if(!guestReady){status('Waiting for opponent to ready up','err');return;}
+  socket.emit('room:launch');
+};
+
+document.getElementById('btn-leave').onclick=()=>{
+  socket.emit('room:leave');
+  myRoom=null; isMaster=false; isReady=false;
+  showList(); status('Left room','');
+};
+
+document.getElementById('btn-create').onclick=()=>{
+  if(!myName){status('Set your name first','err');return;}
+  document.getElementById('modal-name').value=myName+"'s Room";
+  document.getElementById('modal-overlay').classList.add('open');
+  setTimeout(()=>document.getElementById('modal-name').focus(),50);
+};
+document.getElementById('btn-modal-cancel').onclick=()=>document.getElementById('modal-overlay').classList.remove('open');
+document.getElementById('btn-modal-confirm').onclick=createRoom;
+document.getElementById('modal-name').addEventListener('keydown',e=>{ if(e.key==='Enter') createRoom(); });
+function createRoom(){
+  const name=document.getElementById('modal-name').value.trim();
+  if(!name) return;
+  socket.emit('room:create',{name,open:roomIsPublic,playerName:myName});
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+document.getElementById('toggle-public').onclick=()=>{ roomIsPublic=true; document.getElementById('toggle-public').classList.add('active'); document.getElementById('toggle-private').classList.remove('active'); };
+document.getElementById('toggle-private').onclick=()=>{ roomIsPublic=false; document.getElementById('toggle-private').classList.add('active'); document.getElementById('toggle-public').classList.remove('active'); };
+
+document.getElementById('btn-joincode').onclick=joinByCode;
+document.getElementById('code-input').addEventListener('keydown',e=>{ if(e.key==='Enter') joinByCode(); });
+function joinByCode(){ if(!myName){status('Set your name first','err');return;} const code=document.getElementById('code-input').value.trim(); if(code.length!==4){status('Enter a 4-digit code','err');return;} socket.emit('room:join',{code,playerName:myName}); }
+
+const params=new URLSearchParams(window.location.search);
+if(params.get('name')){ myName=params.get('name'); document.getElementById('name-input').value=myName; localStorage.setItem('pong_name',myName); }
+
+showList();
+</script>
+</body>
+</html>

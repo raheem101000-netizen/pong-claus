@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PONG — Multiplayer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; touch-action: none; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: -apple-system, 'Segoe UI', sans-serif; }
+#gw { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; }
+#game-shell { position: relative; width: 100%; max-width: 420px; }
+#hud { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; background: rgba(0,0,0,0.95); border-radius: 8px 8px 0 0; }
+#hud-balance { font-size: 20px; font-weight: 700; font-family: monospace; color: #4CFF6C; }
+#hud-mid { text-align: center; }
+#hud-match { font-size: 11px; color: rgba(255,255,255,0.45); }
+#hud-wins  { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.7); margin-top: 1px; }
+#hud-right { text-align: right; }
+#hud-diff  { font-size: 11px; color: rgba(255,255,255,0.45); }
+#hud-tier  { font-size: 12px; font-weight: 700; letter-spacing: 1px; margin-top: 1px; color: #4CFF6C; }
+#phase-bar { display: flex; gap: 3px; padding: 5px 14px; background: rgba(0,0,0,0.8); }
+.phase-seg { height: 4px; border-radius: 2px; flex: 1; opacity: 0.25; transition: opacity 0.3s; }
+.phase-seg.done    { opacity: 1; }
+.phase-seg.current { opacity: 1; animation: pseg 1s infinite; }
+@keyframes pseg { 0%,100%{opacity:1} 50%{opacity:0.4} }
+canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #000; }
+#overlay, #match-result, #series-result, #waiting-screen {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.93); z-index: 10; border-radius: 8px; gap: 0;
+}
+#match-result, #series-result, #waiting-screen { display: none; }
+#lobby-title { font-size: 44px; letter-spacing: 14px; font-weight: 300; color: #fff; margin-bottom: 4px; }
+#lobby-sub   { font-size: 11px; letter-spacing: 3px; color: #444; margin-bottom: 24px; }
+#name-input  { background: transparent; border: 1px solid #333; color: #fff; padding: 11px 16px; font-family: monospace; font-size: 14px; width: 240px; border-radius: 4px; text-align: center; margin-bottom: 16px; letter-spacing: 1px; outline: none; }
+#name-input:focus { border-color: #fff; }
+.menu-row { display: flex; gap: 10px; margin-bottom: 10px; }
+.btn { background: transparent; border: 1px solid #333; color: #666; padding: 10px 20px; font-family: monospace; font-size: 12px; cursor: pointer; letter-spacing: 2px; border-radius: 4px; transition: all 0.15s; }
+.btn:active { transform: scale(0.96); }
+.btn:hover  { border-color: #fff; color: #fff; }
+.btn-green { background: #4CFF6C; color: #111; border: none; padding: 12px 32px; font-size: 14px; font-weight: 600; letter-spacing: 1px; border-radius: 4px; cursor: pointer; }
+.btn-green:hover { background: #2ecc71; }
+.btn-gold  { background: #FFD700; color: #111; border: none; padding: 12px 32px; font-size: 14px; font-weight: 600; letter-spacing: 1px; border-radius: 4px; cursor: pointer; }
+#code-row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+#code-input { background: transparent; border: 1px solid #333; color: #fff; padding: 10px 14px; font-family: monospace; font-size: 18px; font-weight: 700; width: 110px; border-radius: 4px; text-align: center; letter-spacing: 4px; outline: none; }
+#code-input:focus { border-color: #fff; }
+#room-code-display { font-size: 52px; font-weight: 700; font-family: monospace; color: #4CFF6C; letter-spacing: 8px; margin: 8px 0; }
+#waiting-sub  { font-size: 12px; color: rgba(255,255,255,0.4); letter-spacing: 1px; margin-bottom: 20px; }
+.spinner { width: 28px; height: 28px; border: 3px solid #222; border-top-color: #4CFF6C; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#mr-change  { font-size: 52px; font-weight: 700; margin-bottom: 2px; }
+#mr-score   { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 10px; letter-spacing: 1px; }
+#mr-balance { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+#mr-match   { font-size: 11px; color: rgba(255,255,255,0.35); margin-bottom: 6px; letter-spacing: 1px; }
+#mr-tally   { display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; max-width: 280px; margin-bottom: 18px; }
+.tdot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid #222; flex-shrink: 0; }
+.tdot.p1 { background: #4CFF6C; }
+.tdot.p2 { background: #4488FF; }
+#mr-waiting { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 8px; letter-spacing: 1px; display: none; }
+#se-title   { font-size: 28px; font-weight: 500; margin-bottom: 4px; }
+#se-payout  { font-size: 56px; font-weight: 700; margin-bottom: 2px; }
+#se-sub     { font-size: 13px; color: rgba(255,255,255,0.45); margin-bottom: 4px; }
+#se-summary { font-size: 11px; color: rgba(255,255,255,0.3); margin-bottom: 6px; }
+#se-tally   { display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; max-width: 280px; margin-bottom: 20px; }
+#powerup-banner { position: absolute; top: 46%; left: 50%; transform: translate(-50%,-50%); font-size: 13px; letter-spacing: 2px; color: #fff; pointer-events: none; opacity: 0; transition: opacity 0.2s; z-index: 5; text-align: center; text-shadow: 0 0 10px currentColor; white-space: nowrap; }
+#cd-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #fff; font-size: 64px; font-weight: 300; pointer-events: none; opacity: 0; z-index: 9; font-family: monospace; transition: opacity 0.15s; }
+#error-msg { font-size: 11px; color: #FF4444; letter-spacing: 1px; margin-top: 6px; min-height: 16px; }
+#role-label { position: absolute; bottom: 10px; left: 0; right: 0; text-align: center; font-size: 10px; color: #222; letter-spacing: 2px; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="gw">
+  <div id="game-shell">
+    <div id="hud">
+      <div id="hud-balance">+$0</div>
+      <div id="hud-mid">
+        <div id="hud-match">Match 1 / 20</div>
+        <div id="hud-wins">0 — 0</div>
+      </div>
+      <div id="hud-right">
+        <div id="hud-diff">Difficulty</div>
+        <div id="hud-tier">EASY</div>
+      </div>
+    </div>
+    <div id="phase-bar"></div>
+    <canvas id="canvas"></canvas>
+    <div id="powerup-banner"></div>
+    <div id="cd-msg"></div>
+    <div id="overlay">
+      <div id="lobby-title">PONG</div>
+      <div id="lobby-sub">MULTIPLAYER · 20 MATCHES · $10/MATCH</div>
+      <input id="name-input" type="text" maxlength="12" placeholder="Your name" autocomplete="off" />
+      <div class="menu-row">
+        <button class="btn-green" id="btn-create">Create Room</button>
+      </div>
+      <div id="code-row">
+        <input id="code-input" type="text" maxlength="4" placeholder="CODE" autocomplete="off" />
+        <button class="btn" id="btn-join">Join →</button>
+      </div>
+      <div id="error-msg"></div>
+    </div>
+    <div id="waiting-screen">
+      <div style="font-size:12px;color:rgba(255,255,255,0.4);letter-spacing:2px;margin-bottom:12px;">ROOM CODE</div>
+      <div id="room-code-display">----</div>
+      <div id="waiting-sub">Share this code with your opponent</div>
+      <div class="spinner"></div>
+      <div style="font-size:11px;color:rgba(255,255,255,0.3);letter-spacing:1px;">Waiting for opponent to join...</div>
+      <button class="btn" style="margin-top:20px;" id="btn-cancel">Cancel</button>
+    </div>
+    <div id="match-result">
+      <div id="mr-change">+$10</div>
+      <div id="mr-score">3 — 1</div>
+      <div id="mr-balance">Balance: +$10</div>
+      <div id="mr-match">Match 1 of 20</div>
+      <div id="mr-tally"></div>
+      <button class="btn-green" id="btn-next-match">Next Match →</button>
+      <div id="mr-waiting">Waiting for opponent...</div>
+      <button class="btn" style="margin-top:10px;" id="btn-quit-match">Quit Series</button>
+    </div>
+    <div id="series-result">
+      <div id="se-title">Session Complete</div>
+      <div id="se-payout">$0</div>
+      <div id="se-sub"></div>
+      <div id="se-summary"></div>
+      <div id="se-tally"></div>
+      <button class="btn-gold" id="btn-cashout" style="display:none;">Cash Out</button>
+      <button class="btn-green" id="btn-play-again" style="margin-top:10px;">Play Again</button>
+      <button class="btn" style="margin-top:10px;" id="btn-lobby">Back to Lobby</button>
+    </div>
+    <div id="role-label"></div>
+  </div>
+</div>
+<script src="/colyseus-adapter.js"></script>
+<script>
+const TOTAL_MATCHES = 20;
+const MATCH_STAKE   = 10;
+const TIER_LABELS   = ['EASY','EASY+','MEDIUM','MEDIUM+','HARD','HARD+','MAX'];
+const TIER_COLORS   = ['#4CFF6C','#4CFF6C','#FFD700','#FFD700','#FF8C00','#FF4444','#FF4444'];
+function getMatchTier(m) { return Math.min(Math.floor((m-1)/3), 6); }
+const canvas  = document.getElementById('canvas');
+const ctx     = canvas.getContext('2d');
+const cdMsg   = document.getElementById('cd-msg');
+let W, H, PADDLE_LONG, PADDLE_SHORT, BALL_R;
+const S_W = 400, S_H = 660;
+const S_PADDLE_LONG = Math.round(S_W * 0.28);   // 112, matches server
+const PADDLE_SHORT_S = Math.round(S_H * 0.018);  // 12, server-unit paddle height
+function resize() {
+  W = Math.min(window.innerWidth, 420);
+  H = Math.min(window.innerHeight - 80, 660);
+  canvas.width = W; canvas.height = H;
+  PADDLE_LONG  = Math.round(W * 0.28);
+  PADDLE_SHORT = Math.round(H * 0.018);
+  BALL_R = Math.round(Math.min(W,H) * 0.018);
+}
+const browserId = (() => { let id = localStorage.getItem('pong_bid'); if (!id) { id = Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10); localStorage.setItem('pong_bid',id); } return id; })();
+let socket, myRole, myName = '';
+let gameState = null;
+let seriesMatch = 1, myWins = 0, oppWins = 0, myBalance = 0;
+let results = [];
+let gameRunning = false;
+let keys = {};
+let localPaddleX = null; // server units (0-400), this browser owns its own paddle
+function connect() {
+  socket = io();
+  // Keepalive heartbeat — keeps the WebSocket active so Render's free tier
+  // never sees it idle and recycles it mid-game (the cause of the mid-game
+  // desync). This is what Curvytron does to survive the same free tier.
+  setInterval(() => {
+    if (socket && socket.connected) socket.emit('hb');
+  }, 15000);
+  socket.on('disconnect', (reason) => console.log('[CLIENT] disconnected:', reason));
+  socket.io.on('reconnect', (n) => console.log('[CLIENT] reconnected after', n, 'attempts'));
+  socket.on('connect_error', () => showError('Cannot connect to server'));
+  socket.on('roomCreated', ({ code, role }) => {
+    myRole = role;
+    document.getElementById('overlay').style.display = 'none';
+    document.getElementById('waiting-screen').style.display = 'flex';
+    document.getElementById('room-code-display').textContent = code;
+    document.getElementById('role-label').textContent = 'YOU ARE PLAYER 1 — BOTTOM PADDLE';
+  });
+  socket.on('roomJoined', ({ role, myName: serverName, paddlePos }) => {
+    myRole = role;
+    if (serverName) myName = serverName;
+    document.getElementById('overlay').style.display = 'none';
+    document.getElementById('waiting-screen').style.display = 'none';
+    document.getElementById('role-label').textContent = myName + ' — ' + paddlePos + ' PADDLE';
+    updateHUD(1, 0, 0, 0);
+  });
+  socket.on('opponentName', ({ name }) => {
+    document.getElementById('role-label').textContent = myName + ' vs ' + name;
+  });
+  socket.on('countdown', ({ count }) => {
+    if (count === 3) localPaddleX = null; // reset for new match
+    cdMsg.textContent = count; cdMsg.style.opacity = '1';
+    setTimeout(() => { cdMsg.style.opacity = '0'; }, 800);
+  });
+  socket.on('state', (s) => { gameState = s; gameRunning = true; });
+  socket.on('matchEnd', (data) => {
+    gameRunning = false; gameState = null; localPaddleX = null;
+    seriesMatch = data.match;
+    const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
+    myBalance = myRole==='p1' ? data.p1Balance : data.p2Balance;
+    myWins    = myRole==='p1' ? data.p1Wins    : data.p2Wins;
+    oppWins   = myRole==='p1' ? data.p2Wins    : data.p1Wins;
+    results   = data.results;
+    updateHUD(seriesMatch, myWins, oppWins, myBalance);
+    showMatchResult(iWon, data);
+  });
+  socket.on('seriesEnd', (data) => {
+    myBalance = myRole==='p1' ? data.p1Balance : data.p2Balance;
+    results = data.results;
+    showSeriesResult();
+  });
+  socket.on('waitingForOpponent', () => {
+    document.getElementById('btn-next-match').style.display = 'none';
+    document.getElementById('mr-waiting').style.display = 'block';
+  });
+  socket.on('opponentLeft', () => {
+    gameRunning = false;
+    showError('Opponent disconnected');
+    setTimeout(() => { hideAll(); document.getElementById('overlay').style.display = 'flex'; }, 2500);
+  });
+  socket.on('error', ({ msg }) => showError(msg));
+}
+function updateHUD(match, wins, oppW, balance) {
+  const tier = getMatchTier(match), color = TIER_COLORS[tier], bal = balance;
+  document.getElementById('hud-balance').textContent = (bal>=0?'+':'')+'$'+bal;
+  document.getElementById('hud-balance').style.color = bal>0?'#4CFF6C':bal<0?'#FF4444':'rgba(255,255,255,0.4)';
+  document.getElementById('hud-match').textContent = `Match ${match} / ${TOTAL_MATCHES}`;
+  document.getElementById('hud-wins').textContent  = `${wins} — ${oppW}`;
+  document.getElementById('hud-tier').textContent  = TIER_LABELS[tier];
+  document.getElementById('hud-tier').style.color  = color;
+  buildPhaseBar(match);
+}
+function buildPhaseBar(match) {
+  const bar = document.getElementById('phase-bar');
+  bar.innerHTML = '';
+  for (let i=0; i<TOTAL_MATCHES; i++) {
+    const seg = document.createElement('div');
+    seg.className = 'phase-seg';
+    seg.style.background = TIER_COLORS[getMatchTier(i+1)];
+    if (i+1 < match) seg.classList.add('done');
+    else if (i+1 === match) seg.classList.add('current');
+    bar.appendChild(seg);
+  }
+}
+function draw() {
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+  if (!gameState) { requestAnimationFrame(draw); return; }
+  const s = gameState;
+  ctx.strokeStyle='#111'; ctx.lineWidth=1; ctx.setLineDash([6,8]);
+  ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke(); ctx.setLineDash([]);
+  ctx.beginPath();
+  const ballSX = (myRole === 'p2') ? (S_W - s.ball.x) : s.ball.x;
+  const ballSY = (myRole === 'p2') ? (S_H - s.ball.y) : s.ball.y;
+  ctx.arc(ballSX*(W/S_W), ballSY*(H/S_H), BALL_R, 0, Math.PI*2);
+  ctx.fillStyle='#fff'; ctx.fill();
+  const flip = myRole === 'p2';
+  const flipY = (sy) => flip ? (S_H - sy - PADDLE_SHORT_S) : sy;
+  const mirrorX = (sx) => flip ? (S_W - sx - S_PADDLE_LONG) : sx;
+  const myServerX  = (localPaddleX !== null ? localPaddleX : (myRole==='p1' ? s.p1.x : s.p2.x));
+  const oppServerX = myRole==='p1' ? s.p2.x : s.p1.x;
+  const myServerY  = myRole==='p1' ? s.p1.y : s.p2.y;
+  const oppServerY = myRole==='p1' ? s.p2.y : s.p1.y;
+  const myX  = mirrorX(myServerX)  * (W/S_W);
+  const oppX = mirrorX(oppServerX) * (W/S_W);
+  const myY  = flipY(myServerY) * (H/S_H);
+  const oppY = flipY(oppServerY) * (H/S_H);
+  ctx.fillStyle = '#4CFF6C';
+  ctx.fillRect(myX, myY, PADDLE_LONG, PADDLE_SHORT);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(oppX, oppY, PADDLE_LONG, PADDLE_SHORT);
+  const fs=Math.round(Math.min(W,H)*0.1);
+  ctx.font=`${fs}px monospace`; ctx.textAlign='center'; ctx.fillStyle='#1a1a1a';
+  ctx.fillText(s.p2.score, W/2, H/2-fs*0.15);
+  ctx.fillText(s.p1.score, W/2, H/2+fs);
+  if (s.delay>0) {
+    const count=Math.ceil(s.delay/30);
+    if (count>0&&count<=3) {
+      const cs=Math.round(Math.min(W,H)*0.075);
+      ctx.font=`${cs}px monospace`; ctx.textAlign='center';
+      ctx.fillStyle='rgba(255,255,255,0.3)';
+      ctx.fillText(count, W/2, H/2+cs*0.35);
+    }
+  }
+  requestAnimationFrame(draw);
+}
+function showMatchResult(iWon, data) {
+  const chEl = document.getElementById('mr-change');
+  chEl.textContent = iWon ? 'YOU WIN!' : 'YOU LOSE!';
+  chEl.style.color  = iWon ? '#4CFF6C' : '#FF4444';
+
+  const p1s = myRole==='p1' ? data.p1Score : data.p2Score;
+  const p2s = myRole==='p1' ? data.p2Score : data.p1Score;
+  document.getElementById('mr-score').textContent = `${p1s} — ${p2s}`;
+  document.getElementById('mr-balance').textContent = iWon ? 'You earn $10!' : 'No payout this time';
+  document.getElementById('mr-balance').style.color = iWon ? '#4CFF6C' : '#FF4444';
+  document.getElementById('mr-match').textContent = 'First to 10 points';
+  document.getElementById('btn-next-match').textContent = 'Play Again';
+  document.getElementById('btn-next-match').style.display = 'block';
+  document.getElementById('mr-waiting').style.display = 'none';
+  document.getElementById('match-result').style.display = 'flex';
+}
+function showSeriesResult() {
+  document.getElementById('match-result').style.display='none';
+  const profit=myBalance>0;
+  document.getElementById('se-title').textContent='Session Complete';
+  document.getElementById('se-payout').textContent=(myBalance>=0?'+':'')+'$'+myBalance;
+  document.getElementById('se-payout').style.color=profit?'#4CFF6C':myBalance<0?'#FF4444':'rgba(255,255,255,0.4)';
+  document.getElementById('se-sub').textContent=profit?'You finished in profit — cash out your winnings':myBalance===0?'You broke even — no payout':'No payout — finish in positive balance to cash out';
+  document.getElementById('se-summary').textContent=`${myWins} wins / ${oppWins} losses across 20 matches`;
+  document.getElementById('btn-cashout').style.display=profit?'block':'none';
+  buildTally('se-tally', results);
+  document.getElementById('series-result').style.display='flex';
+}
+function buildTally(elId, res) {
+  const el=document.getElementById(elId); el.innerHTML='';
+  for (let i=0; i<TOTAL_MATCHES; i++) {
+    const d=document.createElement('div'); d.className='tdot';
+    if (i<res.length) { const won=(myRole==='p1'&&res[i]==='p1')||(myRole==='p2'&&res[i]==='p2'); d.classList.add(won?'p1':'p2'); }
+    el.appendChild(d);
+  }
+}
+function hideAll() { ['overlay','waiting-screen','match-result','series-result'].forEach(id=>{ document.getElementById(id).style.display='none'; }); }
+function showError(msg) { document.getElementById('error-msg').textContent=msg; setTimeout(()=>{ document.getElementById('error-msg').textContent=''; },3000); }
+document.addEventListener('keydown', e=>{ keys[e.key]=true; if(['ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault(); });
+document.addEventListener('keyup', e=>{ keys[e.key]=false; });
+function applyTouch(e) {
+  e.preventDefault();
+  if (e.touches.length === 0) return;
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  let serverX = ((t.clientX - rect.left) / rect.width) * S_W;
+  if (myRole === 'p2') serverX = S_W - serverX;
+  localPaddleX = Math.max(0, Math.min(S_W - S_PADDLE_LONG, serverX - S_PADDLE_LONG / 2));
+}
+canvas.addEventListener('touchstart', applyTouch, { passive: false });
+canvas.addEventListener('touchmove',  applyTouch, { passive: false });
+canvas.addEventListener('touchend',   e => { e.preventDefault(); }, { passive: false });
+document.getElementById('btn-create').onclick=()=>{ myName=document.getElementById('name-input').value.trim()||'Player 1'; connect(); socket.on('connect',()=>socket.emit('createRoom',{name:myName})); };
+document.getElementById('btn-join').onclick=()=>{ const code=document.getElementById('code-input').value.trim(); if(code.length!==4){showError('Enter a 4-digit code');return;} myName=document.getElementById('name-input').value.trim()||'Player 2'; connect(); socket.on('connect',()=>socket.emit('joinRoom',{code,name:myName})); };
+document.getElementById('btn-cancel').onclick=()=>{ if(socket)socket.disconnect(); document.getElementById('waiting-screen').style.display='none'; document.getElementById('overlay').style.display='flex'; };
+document.getElementById('btn-next-match').onclick=()=>{ document.getElementById('btn-next-match').style.display='none'; document.getElementById('mr-waiting').style.display='block'; socket.emit('nextMatch'); document.getElementById('match-result').style.display='none'; };
+document.getElementById('btn-quit-match').onclick=()=>{ if(socket)socket.disconnect(); hideAll(); document.getElementById('overlay').style.display='flex'; };
+document.getElementById('btn-cashout').onclick=()=>{ alert('Cashing out $'+Math.max(0,myBalance)+'! (Stripe integration goes here)'); };
+document.getElementById('btn-play-again').onclick=()=>{ document.getElementById('series-result').style.display='none'; document.getElementById('overlay').style.display='flex'; };
+document.getElementById('btn-lobby').onclick=()=>{ if(socket)socket.disconnect(); document.getElementById('series-result').style.display='none'; document.getElementById('overlay').style.display='flex'; };
+// Browser owns its own paddle — move locally each rAF, send position at 40Hz.
+function paddleLoop() {
+  if (gameRunning) {
+    if (localPaddleX === null) {
+      localPaddleX = (myRole === 'p1'
+        ? (gameState?.p1?.x ?? S_W/2 - S_PADDLE_LONG/2)
+        : (gameState?.p2?.x ?? S_W/2 - S_PADDLE_LONG/2));
+    }
+    const pspd = S_W * 0.028;
+    let left  = keys['ArrowLeft']  || keys['a'] || keys['A'];
+    let right = keys['ArrowRight'] || keys['d'] || keys['D'];
+    if (myRole === 'p2') { const tmp = left; left = right; right = tmp; }
+    if (left)  localPaddleX -= pspd;
+    if (right) localPaddleX += pspd;
+    localPaddleX = Math.max(0, Math.min(S_W - S_PADDLE_LONG, localPaddleX));
+  }
+  requestAnimationFrame(paddleLoop);
+}
+paddleLoop();
+// Send paddle position ~20×/sec and ONLY when it actually moved. A still paddle
+// sends nothing. This roughly halves outgoing traffic and stops the message flood
+// that chokes Render's free tier and causes the mid-match freeze.
+let lastSentX = null;
+setInterval(() => {
+  if (socket && socket.connected && gameRunning && localPaddleX !== null) {
+    if (lastSentX === null || Math.abs(localPaddleX - lastSentX) > 0.5) {
+      socket.emit('paddleMove', { x: localPaddleX });
+      lastSentX = localPaddleX;
+    }
+  }
+}, 1000 / 20);
+window.addEventListener('resize', resize);
+resize(); buildPhaseBar(1); updateHUD(1,0,0,0); draw();
+
+// Auto-join from rooms lobby
+const urlParams = new URLSearchParams(window.location.search);
+const roomFromURL = urlParams.get('room');
+const nameFromURL = urlParams.get('name');
+if (roomFromURL && nameFromURL) {
+  myName = nameFromURL;
+  document.getElementById('overlay').style.display = 'none';
+  connect();
+  socket.on('connect', () => {
+    socket.emit('joinRoom', { code: roomFromURL, name: myName, bid: browserId });
+  });
+  // Re-join on EVERY reconnect so the server rebinds our new socket id via bid.
+  socket.io.on('reconnect', () => {
+    if (roomFromURL) socket.emit('joinRoom', { code: roomFromURL, name: myName, bid: browserId });
+  });
+}
+</script>
+</body>
+</html>
