@@ -1,4 +1,5 @@
 import { Client } from "@colyseus/sdk";
 
-export const colyseusSDK = new Client(`${location.protocol}//${location.host}/colyseus`);
-
+// Use secure WebSocket (wss) on https hosts like Render, ws on local http.
+const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+export const colyseusSDK = new Client(`${protocol}//${location.host}/colyseus`);
