@@ -13,5 +13,6 @@ import { listen } from "@colyseus/tools";
 // Import Colyseus config
 import app from "./app.config";
 
-// Create and listen on 2567 (or PORT environment variable.)
-listen(app);
+// Bind to 0.0.0.0 so Render's health check can reach the port.
+// PORT is set by Render automatically; fall back to 2567 locally.
+listen(app, Number(process.env.PORT) || 2567, "0.0.0.0");
