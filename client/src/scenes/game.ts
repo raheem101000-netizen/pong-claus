@@ -8,7 +8,7 @@ const PADDLE_LONG = Math.round(W * 0.28);
 const PADDLE_SHORT = Math.round(H * 0.018);
 
 export function createGameScene() {
-  k.scene("game", (room: Room<MyRoomState>) => {
+  k.scene("game", ({ room, myName }: { room: Room<MyRoomState>, myName: string }) => {
     const state = room.state;
     const mySessionId = room.sessionId;
     const scale = Math.min(k.width() / W, k.height() / H);
@@ -32,6 +32,7 @@ export function createGameScene() {
     const myScoreTxt = k.add([k.text("0", { size: 48 }), k.pos(sx(W * 0.5), sy(H * 0.62)), k.anchor("center"), k.color(60, 60, 70)]);
     const oppScoreTxt = k.add([k.text("0", { size: 48 }), k.pos(sx(W * 0.5), sy(H * 0.38)), k.anchor("center"), k.color(60, 60, 70)]);
     const info = k.add([k.text("Waiting for opponent...", { size: 18 }), k.pos(k.width()/2, sy(H*0.5)), k.anchor("center"), k.color(150,150,150)]);
+    const codeLabel = k.add([k.text("Room code: " + room.roomId, { size: 16 }), k.pos(k.width()/2, sy(H*0.5)+40), k.anchor("center"), k.color(120,200,255)]);
 
     k.onUpdate(() => {
       if (!state.p1 || !state.p2 || !state.ball) return;
@@ -49,9 +50,10 @@ export function createGameScene() {
         const iWon = state.winner === role;
         info.text = iWon ? "YOU WIN!" : "YOU LOSE";
         info.color = iWon ? k.rgb(76,255,108) : k.rgb(255,80,80);
-      } else if (state.numPlayers < 2) { info.text = "Waiting for opponent..."; }
-      else if (state.delay > 0) { info.text = "Get ready!"; }
-      else { info.text = ""; }
+        codeLabel.hidden = true;
+      } else if (state.numPlayers < 2) { info.text = "Waiting for opponent..."; codeLabel.hidden = false; }
+      else if (state.delay > 0) { info.text = "Get ready!"; codeLabel.hidden = true; }
+      else { info.text = ""; codeLabel.hidden = true; }
     });
 
     function sendMove(screenX: number) {

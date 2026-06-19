@@ -15,7 +15,8 @@ export class MyRoom extends Room {
   state = new MyRoomState();
 
   onCreate(options: any) {
-    this.setMetadata({ name: options?.name || "Public Room" });
+    this.setMetadata({ name: options?.name || "Public Room", isPrivate: !!options?.isPrivate });
+    if (options?.isPrivate) this.setPrivate(true);
     this.state.p1.x = W / 2 - PADDLE_LONG / 2;
     this.state.p1.y = H - PADDLE_SHORT - Math.round(H * 0.04);
     this.state.p2.x = W / 2 - PADDLE_LONG / 2;
