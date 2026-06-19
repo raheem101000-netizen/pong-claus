@@ -167,6 +167,13 @@ function connect() {
   setInterval(() => {
     if (socket && socket.connected) socket.emit('hb');
   }, 15000);
+  setInterval(() => {
+    if (socket && socket.connected) socket.emit('ping', { ts: Date.now() });
+  }, 2000);
+  socket.on('pong', function(data) {
+    var halfRtt = Math.floor((Date.now() - data.ts) / 2);
+    socket.emit('latency', { ms: halfRtt });
+  });
   socket.on('disconnect', (reason) => console.log('[CLIENT] disconnected:', reason));
   socket.io.on('reconnect', (n) => console.log('[CLIENT] reconnected after', n, 'attempts'));
   socket.on('connect_error', () => showError('Cannot connect to server'));

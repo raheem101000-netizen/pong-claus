@@ -18,6 +18,7 @@ interface GameState {
   ball: BallState; p1: PaddleState; p2: PaddleState;
   delay: number; _pendingDir?: boolean;
 }
+interface PaddleXSample { t: number; x: number; }
 
 function initGameState(): GameState {
   return {
@@ -42,6 +43,12 @@ export class GameRoom extends Room {
   private p2Balance = 0;
   private results: string[] = [];
   private nextMatchReady = new Set<string>();
+
+  // Lag compensation: per-player one-way latency and paddle position history.
+  private p1LatencyMs = 0;
+  private p2LatencyMs = 0;
+  private p1History: PaddleXSample[] = [];
+  private p2History: PaddleXSample[] = [];
 
   onCreate() {
     this.onMessage("joinRoom", (client: Client, data: { code?: string; name?: string; bid?: string }) => {
@@ -93,6 +100,17 @@ export class GameRoom extends Room {
 
     this.onMessage("hb", () => {});
 
+    this.onMessage("ping", (client: Client, data: { ts: number }) => {
+      client.send("pong", { ts: data.ts });
+    });
+
+    this.onMessage("latency", (client: Client, data: { ms: number }) => {
+      const idx = this.gameJoined.findIndex(p => p.sessionId === client.sessionId);
+      const clamped = Math.max(0, Math.min(250, data.ms | 0));
+      if (idx === 0) this.p1LatencyMs = clamped;
+      if (idx === 1) this.p2LatencyMs = clamped;
+    });
+
     this.onMessage("nextMatch", (client: Client) => {
       if (!this.gameJoined.find(p => p.sessionId === client.sessionId)) return;
       this.nextMatchReady.add(client.sessionId);
@@ -133,6 +151,8 @@ export class GameRoom extends Room {
     if (this.gameInterval) clearInterval(this.gameInterval);
     this.gs = initGameState();
     this.broadcastCounter = 0;
+    this.p1History = [];
+    this.p2History = [];
     this.gameInterval = setInterval(() => {
       if (!this.gs) return;
       const winner = this.tickBall();
@@ -152,6 +172,15 @@ export class GameRoom extends Room {
   private tickBall(): string | null {
     const s = this.gs!;
     const b = s.ball;
+    const now = Date.now();
+
+    // Record paddle positions for this tick, then trim history older than 300ms.
+    this.p1History.push({ t: now, x: s.p1.x });
+    this.p2History.push({ t: now, x: s.p2.x });
+    const cutoff = now - 300;
+    while (this.p1History.length > 1 && this.p1History[0].t < cutoff) this.p1History.shift();
+    while (this.p2History.length > 1 && this.p2History[0].t < cutoff) this.p2History.shift();
+
     if (s.delay > 0) {
       s.delay--;
       if (s.delay === 0) {
@@ -160,6 +189,11 @@ export class GameRoom extends Room {
       }
       return null;
     }
+
+    // Rewound paddle x for each player: paddle where they saw it at their screen time.
+    const p1x = this.rewindX(this.p1History, now, this.p1LatencyMs, s.p1.x);
+    const p2x = this.rewindX(this.p2History, now, this.p2LatencyMs, s.p2.x);
+
     // Sub-step so the ball never moves more than PADDLE_SHORT px per iteration.
     // Guarantees crossed-check fires even at SPEED_MAX.
     const steps = Math.max(1, Math.ceil(Math.abs(b.vy) / PADDLE_SHORT));
@@ -171,8 +205,8 @@ export class GameRoom extends Room {
       b.x += sx; b.y += sy;
       if (b.x - BALL_R < 0)  { b.x = BALL_R;     b.vx =  Math.abs(b.vx); }
       if (b.x + BALL_R > W)  { b.x = W - BALL_R; b.vx = -Math.abs(b.vx); }
-      if (this.hitPaddle(s.p1, true,  prevY, prevX)) break;
-      if (this.hitPaddle(s.p2, false, prevY, prevX)) break;
+      if (this.hitPaddle(s.p1, p1x, true,  prevY, prevX)) break;
+      if (this.hitPaddle(s.p2, p2x, false, prevY, prevX)) break;
       if (b.y > H + 20) { s.p2.score++; this.resetBall(false); return this.checkScore(); }
       if (b.y < -20)    { s.p1.score++; this.resetBall(true);  return this.checkScore(); }
     }
@@ -181,15 +215,34 @@ export class GameRoom extends Room {
     return null;
   }
 
+  // Look up the interpolated paddle x from history at time (now - latencyMs).
+  private rewindX(history: PaddleXSample[], now: number, latencyMs: number, fallback: number): number {
+    if (latencyMs === 0 || history.length === 0) return fallback;
+    const target = now - latencyMs;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].t <= target) {
+        if (i + 1 < history.length) {
+          const a = history[i], b = history[i + 1];
+          const frac = (target - a.t) / (b.t - a.t);
+          return a.x + (b.x - a.x) * frac;
+        }
+        return history[i].x;
+      }
+    }
+    return history[0].x;
+  }
+
   // Returns true if a collision occurred (caller should stop sub-stepping).
-  private hitPaddle(p: PaddleState, isP1: boolean, prevY: number, prevX: number): boolean {
+  // paddleX is the lag-compensated (rewound) horizontal position for this player;
+  // p.y and p.score are always live values (Y never changes during a match).
+  private hitPaddle(p: PaddleState, paddleX: number, isP1: boolean, prevY: number, prevX: number): boolean {
     const b = this.gs!.ball;
 
     // Velocity guard: only collide when ball is actually moving toward this paddle.
     // Prevents double-hits on the tick immediately after a bounce.
     if (isP1 ? b.vy <= 0 : b.vy >= 0) return false;
 
-    const hitX = b.x + BALL_R > p.x - FORGIVE && b.x - BALL_R < p.x + PADDLE_LONG + FORGIVE;
+    const hitX = b.x + BALL_R > paddleX - FORGIVE && b.x - BALL_R < paddleX + PADDLE_LONG + FORGIVE;
     const hitYNow = b.y + BALL_R > p.y && b.y - BALL_R < p.y + PADDLE_SHORT;
     // paddleY is the contact edge: top for P1 (ball comes from above), bottom for P2.
     const paddleY = isP1 ? p.y : p.y + PADDLE_SHORT;
@@ -200,7 +253,7 @@ export class GameRoom extends Room {
     // Corner check: ball circle overlapping either contact-face corner point.
     // Catches diagonal approaches where neither hitYNow nor crossed fires.
     // Check both current and previous position to handle high-speed corner grazes.
-    const lx = p.x, rx = p.x + PADDLE_LONG, fy = paddleY;
+    const lx = paddleX, rx = paddleX + PADDLE_LONG, fy = paddleY;
     const cornerNow  = Math.hypot(b.x   - lx, b.y   - fy) < BALL_R
                     || Math.hypot(b.x   - rx, b.y   - fy) < BALL_R;
     const cornerPrev = Math.hypot(prevX - lx, prevY - fy) < BALL_R
@@ -208,7 +261,7 @@ export class GameRoom extends Room {
 
     if (!((hitX && (hitYNow || crossed)) || cornerNow || cornerPrev)) return false;
 
-    const rel = (b.x - (p.x + PADDLE_LONG / 2)) / (PADDLE_LONG / 2);
+    const rel = (b.x - (paddleX + PADDLE_LONG / 2)) / (PADDLE_LONG / 2);
     const clamped = Math.max(-1, Math.min(1, rel));
     const spd = Math.min(Math.hypot(b.vx, b.vy) + 0.3, SPEED_MAX);
     b.vx = Math.sin(clamped * (Math.PI / 4)) * spd;
