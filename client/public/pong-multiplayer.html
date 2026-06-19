@@ -271,8 +271,9 @@ function draw() {
   const L = 0.4;
   drawn.p1x += (s.p1.x - drawn.p1x) * L;
   drawn.p2x += (s.p2.x - drawn.p2x) * L;
-  drawn.bx  += (s.ball.x - drawn.bx) * L;
-  drawn.by  += (s.ball.y - drawn.by) * L;
+  const ballJump = Math.hypot(s.ball.x - drawn.bx, s.ball.y - drawn.by);
+  if (ballJump > 100) { drawn.bx = s.ball.x; drawn.by = s.ball.y; }
+  else { drawn.bx += (s.ball.x - drawn.bx) * L; drawn.by += (s.ball.y - drawn.by) * L; }
 
   const flip = myRole === 'p2';
   const flipY   = (sy) => flip ? (S_H - sy - PADDLE_SHORT_S) : sy;
