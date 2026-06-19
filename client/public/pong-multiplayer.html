@@ -158,7 +158,10 @@ let seriesMatch = 1, myWins = 0, oppWins = 0, myBalance = 0;
 let results = [];
 let gameRunning = false;
 let keys = {};
-let localPaddleX = null; // server units (0-400), this browser owns its own paddle
+let localPaddleX = null; // input intent only — NOT used for drawing
+let lastSentX    = null;
+// Smoothly interpolated draw state — lerps toward server truth each frame
+let drawn = { p1x: null, p2x: null, bx: null, by: null };
 function connect() {
   socket = io();
   // Keepalive heartbeat — keeps the WebSocket active so Render's free tier
@@ -196,21 +199,15 @@ function connect() {
     document.getElementById('role-label').textContent = myName + ' vs ' + name;
   });
   socket.on('countdown', ({ count }) => {
-    if (count === 3) localPaddleX = null; // reset for new match
+    if (count === 3) { localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; }
     cdMsg.textContent = count; cdMsg.style.opacity = '1';
     setTimeout(() => { cdMsg.style.opacity = '0'; }, 800);
   });
   socket.on('state', (s) => {
     gameState = s; gameRunning = true;
-    // Gently reconcile local paddle toward server so they never drift apart.
-    // Only for OUR paddle — opponent and ball stay pure server state.
-    if (localPaddleX !== null) {
-      const serverMyX = (myRole === 'p1') ? s.p1.x : s.p2.x;
-      localPaddleX += (serverMyX - localPaddleX) * 0.15;
-    }
   });
   socket.on('matchEnd', (data) => {
-    gameRunning = false; gameState = null; localPaddleX = null;
+    gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null };
     seriesMatch = data.match;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
     myBalance = myRole==='p1' ? data.p1Balance : data.p2Balance;
@@ -264,32 +261,47 @@ function draw() {
   const s = gameState;
   ctx.strokeStyle='#111'; ctx.lineWidth=1; ctx.setLineDash([6,8]);
   ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke(); ctx.setLineDash([]);
-  ctx.beginPath();
-  const ballSX = (myRole === 'p2') ? (S_W - s.ball.x) : s.ball.x;
-  const ballSY = (myRole === 'p2') ? (S_H - s.ball.y) : s.ball.y;
-  ctx.arc(ballSX*(W/S_W), ballSY*(H/S_H), BALL_R, 0, Math.PI*2);
-  ctx.fillStyle='#fff'; ctx.fill();
+  // Initialise drawn state on first frame of a new match.
+  if (drawn.p1x === null) { drawn.p1x = s.p1.x; drawn.p2x = s.p2.x; drawn.bx = s.ball.x; drawn.by = s.ball.y; }
+  // Lerp all drawn positions toward server truth each frame — smooth without lying.
+  const L = 0.4;
+  drawn.p1x += (s.p1.x - drawn.p1x) * L;
+  drawn.p2x += (s.p2.x - drawn.p2x) * L;
+  drawn.bx  += (s.ball.x - drawn.bx) * L;
+  drawn.by  += (s.ball.y - drawn.by) * L;
+
   const flip = myRole === 'p2';
-  const flipY = (sy) => flip ? (S_H - sy - PADDLE_SHORT_S) : sy;
+  const flipY   = (sy) => flip ? (S_H - sy - PADDLE_SHORT_S) : sy;
   const mirrorX = (sx) => flip ? (S_W - sx - S_PADDLE_LONG) : sx;
-  const myServerX    = (localPaddleX !== null ? localPaddleX : (myRole==='p1' ? s.p1.x : s.p2.x));
-  const oppServerX   = myRole==='p1' ? s.p2.x : s.p1.x;
-  const myServerY    = myRole==='p1' ? s.p1.y : s.p2.y;
-  const oppServerY   = myRole==='p1' ? s.p2.y : s.p1.y;
-  const confirmedMyX = myRole==='p1' ? s.p1.x : s.p2.x;
+  const myDrawnX  = myRole === 'p1' ? drawn.p1x : drawn.p2x;
+  const oppDrawnX = myRole === 'p1' ? drawn.p2x : drawn.p1x;
+  const myServerY  = myRole === 'p1' ? s.p1.y : s.p2.y;
+  const oppServerY = myRole === 'p1' ? s.p2.y : s.p1.y;
+
+  // NEARMISS: log input-intent vs server truth near our paddle so we can
+  // see how much input lag still exists even without prediction.
   if (localPaddleX !== null && gameRunning && Math.abs(s.ball.y - myServerY) < 60) {
+    const serverMyX = myRole === 'p1' ? s.p1.x : s.p2.x;
     console.log('NEARMISS', {
-      predictedPaddleX: Math.round(localPaddleX),
-      serverPaddleX:    Math.round(confirmedMyX),
-      gap:              Math.round(localPaddleX - confirmedMyX),
-      ballX:            Math.round(s.ball.x),
-      ballY:            Math.round(s.ball.y)
+      inputIntentX:  Math.round(localPaddleX),
+      serverPaddleX: Math.round(serverMyX),
+      drawnPaddleX:  Math.round(myDrawnX),
+      inputLag:      Math.round(localPaddleX - serverMyX),
+      ballX:         Math.round(drawn.bx),
+      ballY:         Math.round(drawn.by)
     });
   }
-  const myX  = mirrorX(myServerX)  * (W/S_W);
-  const oppX = mirrorX(oppServerX) * (W/S_W);
-  const myY  = flipY(myServerY) * (H/S_H);
-  const oppY = flipY(oppServerY) * (H/S_H);
+
+  ctx.beginPath();
+  const ballSX = flip ? (S_W - drawn.bx) : drawn.bx;
+  const ballSY = flip ? (S_H - drawn.by) : drawn.by;
+  ctx.arc(ballSX*(W/S_W), ballSY*(H/S_H), BALL_R, 0, Math.PI*2);
+  ctx.fillStyle='#fff'; ctx.fill();
+
+  const myX  = mirrorX(myDrawnX)  * (W/S_W);
+  const oppX = mirrorX(oppDrawnX) * (W/S_W);
+  const myY  = flipY(myServerY)   * (H/S_H);
+  const oppY = flipY(oppServerY)  * (H/S_H);
   ctx.fillStyle = '#4CFF6C';
   ctx.fillRect(myX, myY, PADDLE_LONG, PADDLE_SHORT);
   ctx.fillStyle = '#fff';
@@ -357,6 +369,10 @@ function applyTouch(e) {
   let serverX = ((t.clientX - rect.left) / rect.width) * S_W;
   if (myRole === 'p2') serverX = S_W - serverX;
   localPaddleX = Math.max(0, Math.min(S_W - S_PADDLE_LONG, serverX - S_PADDLE_LONG / 2));
+  if (socket && socket.connected && gameRunning) {
+    socket.emit('paddleMove', { x: localPaddleX });
+    lastSentX = localPaddleX;
+  }
 }
 canvas.addEventListener('touchstart', applyTouch, { passive: false });
 canvas.addEventListener('touchmove',  applyTouch, { passive: false });
@@ -369,7 +385,8 @@ document.getElementById('btn-quit-match').onclick=()=>{ if(socket)socket.disconn
 document.getElementById('btn-cashout').onclick=()=>{ alert('Cashing out $'+Math.max(0,myBalance)+'! (Stripe integration goes here)'); };
 document.getElementById('btn-play-again').onclick=()=>{ document.getElementById('series-result').style.display='none'; document.getElementById('overlay').style.display='flex'; };
 document.getElementById('btn-lobby').onclick=()=>{ if(socket)socket.disconnect(); document.getElementById('series-result').style.display='none'; document.getElementById('overlay').style.display='flex'; };
-// Browser owns its own paddle — move locally each rAF, send position at 40Hz.
+// Track intended paddle position for sending to server. Runs every rAF so the
+// server gets input as fast as possible — unthrottled, deduplicated by position.
 function paddleLoop() {
   if (gameRunning) {
     if (localPaddleX === null) {
@@ -384,22 +401,14 @@ function paddleLoop() {
     if (left)  localPaddleX -= pspd;
     if (right) localPaddleX += pspd;
     localPaddleX = Math.max(0, Math.min(S_W - S_PADDLE_LONG, localPaddleX));
-  }
-  requestAnimationFrame(paddleLoop);
-}
-paddleLoop();
-// Send paddle position ~20×/sec and ONLY when it actually moved. A still paddle
-// sends nothing. This roughly halves outgoing traffic and stops the message flood
-// that chokes Render's free tier and causes the mid-match freeze.
-let lastSentX = null;
-setInterval(() => {
-  if (socket && socket.connected && gameRunning && localPaddleX !== null) {
-    if (lastSentX === null || Math.abs(localPaddleX - lastSentX) > 0.5) {
+    if (socket && socket.connected && (lastSentX === null || Math.abs(localPaddleX - lastSentX) > 0.5)) {
       socket.emit('paddleMove', { x: localPaddleX });
       lastSentX = localPaddleX;
     }
   }
-}, 1000 / 20);
+  requestAnimationFrame(paddleLoop);
+}
+paddleLoop();
 window.addEventListener('resize', resize);
 resize(); buildPhaseBar(1); updateHUD(1,0,0,0); draw();
 
