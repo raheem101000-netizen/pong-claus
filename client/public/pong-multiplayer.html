@@ -272,10 +272,20 @@ function draw() {
   const flip = myRole === 'p2';
   const flipY = (sy) => flip ? (S_H - sy - PADDLE_SHORT_S) : sy;
   const mirrorX = (sx) => flip ? (S_W - sx - S_PADDLE_LONG) : sx;
-  const myServerX  = (localPaddleX !== null ? localPaddleX : (myRole==='p1' ? s.p1.x : s.p2.x));
-  const oppServerX = myRole==='p1' ? s.p2.x : s.p1.x;
-  const myServerY  = myRole==='p1' ? s.p1.y : s.p2.y;
-  const oppServerY = myRole==='p1' ? s.p2.y : s.p1.y;
+  const myServerX    = (localPaddleX !== null ? localPaddleX : (myRole==='p1' ? s.p1.x : s.p2.x));
+  const oppServerX   = myRole==='p1' ? s.p2.x : s.p1.x;
+  const myServerY    = myRole==='p1' ? s.p1.y : s.p2.y;
+  const oppServerY   = myRole==='p1' ? s.p2.y : s.p1.y;
+  const confirmedMyX = myRole==='p1' ? s.p1.x : s.p2.x;
+  if (localPaddleX !== null && gameRunning && Math.abs(s.ball.y - myServerY) < 60) {
+    console.log('NEARMISS', {
+      predictedPaddleX: Math.round(localPaddleX),
+      serverPaddleX:    Math.round(confirmedMyX),
+      gap:              Math.round(localPaddleX - confirmedMyX),
+      ballX:            Math.round(s.ball.x),
+      ballY:            Math.round(s.ball.y)
+    });
+  }
   const myX  = mirrorX(myServerX)  * (W/S_W);
   const oppX = mirrorX(oppServerX) * (W/S_W);
   const myY  = flipY(myServerY) * (H/S_H);
