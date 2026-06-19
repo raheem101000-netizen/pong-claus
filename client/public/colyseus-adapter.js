@@ -18,7 +18,7 @@
   }
 
   var script = document.createElement('script');
-  script.src = 'https://unpkg.com/colyseus.js@0.17.0/dist/colyseus.js';
+  script.src = '/colyseus-sdk.js';
   script.onload = function () {
     _sdkReady = true;
     var q = _sdkQueue.splice(0);
