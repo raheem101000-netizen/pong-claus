@@ -274,7 +274,9 @@ export class GameRoom extends Room {
     const s = this.gs!;
     s.ball.x = W/2; s.ball.y = H/2;
     s.ball.vx = 0; s.ball.vy = 0;
-    s.delay = 90; s._pendingDir = towardsP1;
+    // 210 ticks @ 60 fps: first 120 (2 s) the client countdown check sees count>3
+    // so nothing shows — clean "see the score" pause — then 90 ticks of 3/2/1 serve.
+    s.delay = 210; s._pendingDir = towardsP1;
   }
 
   private checkScore(): string | null {

@@ -162,6 +162,8 @@ let localPaddleX = null; // input intent only — NOT used for drawing
 let lastSentX    = null;
 // Smoothly interpolated draw state — lerps toward server truth each frame
 let drawn = { p1x: null, p2x: null, bx: null, by: null };
+// Point-scored tracking (client-side, derived from score changes)
+let lastP1Score = 0, lastP2Score = 0, scoredWho = null;
 function connect() {
   socket = io();
   // Keepalive heartbeat — keeps the WebSocket active so Render's free tier
@@ -199,15 +201,17 @@ function connect() {
     document.getElementById('role-label').textContent = myName + ' vs ' + name;
   });
   socket.on('countdown', ({ count }) => {
-    if (count === 3) { localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; }
+    if (count === 3) { localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null; }
     cdMsg.textContent = count; cdMsg.style.opacity = '1';
     setTimeout(() => { cdMsg.style.opacity = '0'; }, 800);
   });
   socket.on('state', (s) => {
     gameState = s; gameRunning = true;
+    if (s.p1.score !== lastP1Score) { scoredWho = 'p1'; lastP1Score = s.p1.score; }
+    if (s.p2.score !== lastP2Score) { scoredWho = 'p2'; lastP2Score = s.p2.score; }
   });
   socket.on('matchEnd', (data) => {
-    gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null };
+    gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
     seriesMatch = data.match;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
     myBalance = myRole==='p1' ? data.p1Balance : data.p2Balance;
@@ -310,13 +314,21 @@ function draw() {
   ctx.font=`${fs}px monospace`; ctx.textAlign='center'; ctx.fillStyle='#1a1a1a';
   ctx.fillText(s.p2.score, W/2, H/2-fs*0.15);
   ctx.fillText(s.p1.score, W/2, H/2+fs);
-  if (s.delay>0) {
-    const count=Math.ceil(s.delay/30);
-    if (count>0&&count<=3) {
-      const cs=Math.round(Math.min(W,H)*0.075);
-      ctx.font=`${cs}px monospace`; ctx.textAlign='center';
-      ctx.fillStyle='rgba(255,255,255,0.3)';
-      ctx.fillText(count, W/2, H/2+cs*0.35);
+  if (s.delay > 0) {
+    const count = Math.ceil(s.delay / 30);
+    if (count > 0 && count <= 3) {
+      const cs = Math.round(Math.min(W,H) * 0.075);
+      ctx.font = `${cs}px monospace`; ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillText(count, W/2, H/2 + cs * 0.35);
+    }
+    // Blank pause window (delay > 90 = first 2 s after a point) — show who scored.
+    if (count > 3 && scoredWho !== null) {
+      const iScored = scoredWho === myRole;
+      const ps = Math.round(Math.min(W,H) * 0.065);
+      ctx.font = `bold ${ps}px monospace`; ctx.textAlign = 'center';
+      ctx.fillStyle = iScored ? '#4CFF6C' : '#FF4444';
+      ctx.fillText(iScored ? 'POINT!' : 'POINT', W/2, H/2 - Math.round(H * 0.1));
     }
   }
   requestAnimationFrame(draw);
