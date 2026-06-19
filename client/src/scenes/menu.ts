@@ -28,10 +28,15 @@ export function createMenuScene() {
     button("Join Public Game", k.height() * 0.40 + 72, async () => {
       status.text = "Finding a game...";
       try {
-        const rooms = await colyseusSDK.getAvailableRooms("my_room");
-        if (rooms.length > 0) { const room = await colyseusSDK.joinById(rooms[0].roomId); k.go("game", room); }
-        else { status.text = "No open rooms — creating one..."; const room = await colyseusSDK.create("my_room", { name: "Public Room" }); k.go("game", room); }
-      } catch (e) { status.text = "Failed to join"; }
+        // join() joins any open public room of this type
+        const room = await colyseusSDK.join("my_room", { name: "Public Room" });
+        k.go("game", room);
+      } catch (e) {
+        // no open room to join — make one and wait
+        status.text = "No open rooms — created one, waiting...";
+        try { const room = await colyseusSDK.create("my_room", { name: "Public Room" }); k.go("game", room); }
+        catch (e2) { status.text = "Failed to join"; }
+      }
     }, [60, 100, 200]);
 
     button("Quick Match", k.height() * 0.40 + 144, async () => {
