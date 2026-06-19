@@ -2,7 +2,7 @@
   "name": "pong-claus",
   "version": "1.0.0",
   "scripts": {
-    "build": "cd server && npm install && npm run build && cd ../client && npm install && npm run build",
+    "build": "cd server && npm install && npm run build && cd ../client && npm install && cp node_modules/@colyseus/sdk/dist/colyseus.js public/colyseus-sdk.js && npm run build",
     "start": "cd server && npm start"
   }
 }
