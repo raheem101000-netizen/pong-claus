@@ -193,7 +193,15 @@ function connect() {
     cdMsg.textContent = count; cdMsg.style.opacity = '1';
     setTimeout(() => { cdMsg.style.opacity = '0'; }, 800);
   });
-  socket.on('state', (s) => { gameState = s; gameRunning = true; });
+  socket.on('state', (s) => {
+    gameState = s; gameRunning = true;
+    // Gently reconcile local paddle toward server so they never drift apart.
+    // Only for OUR paddle — opponent and ball stay pure server state.
+    if (localPaddleX !== null) {
+      const serverMyX = (myRole === 'p1') ? s.p1.x : s.p2.x;
+      localPaddleX += (serverMyX - localPaddleX) * 0.15;
+    }
+  });
   socket.on('matchEnd', (data) => {
     gameRunning = false; gameState = null; localPaddleX = null;
     seriesMatch = data.match;
