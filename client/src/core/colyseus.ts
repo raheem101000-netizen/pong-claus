@@ -1,5 +1,6 @@
 import { Client } from "@colyseus/sdk";
 
-// Use secure WebSocket (wss) on https hosts like Render, ws on local http.
+// Matchmaking lives at the server root. The /colyseus path is only the monitor
+// dashboard, so the client connects to the host root, not /colyseus.
 const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-export const colyseusSDK = new Client(`${protocol}//${location.host}/colyseus`);
+export const colyseusSDK = new Client(`${protocol}//${location.host}`);
