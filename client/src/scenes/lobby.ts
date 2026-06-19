@@ -43,6 +43,7 @@ export function createLobbyScene() {
     ]);
 
     k.onUpdate(() => {
+      if (!state.p1 || !state.p2 || !state.ball) return;
       const role = myRole();
       const me = role === "p1" ? state.p1 : state.p2;
       const opp = role === "p1" ? state.p2 : state.p1;
@@ -68,6 +69,7 @@ export function createLobbyScene() {
     k.onMouseDown((pos: any) => sendMove(pos.x));
 
     k.onUpdate(() => {
+      if (!state.p1 || !state.p2) return;
       const role = myRole();
       const me = role === "p1" ? state.p1 : state.p2;
       const speed = W * 0.028;
