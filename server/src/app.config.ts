@@ -1,4 +1,6 @@
 import { defineServer, defineRoom, monitor, playground } from "colyseus";
+import express from "express";
+import path from "path";
 
 /**
  * Import your Room files
@@ -36,6 +38,13 @@ export const server = defineServer({
          * Read more: https://docs.colyseus.io/tools/monitor/#restrict-access-to-the-panel-using-a-password
          */
         app.use("/colyseus", monitor());
+
+        // Serve the built client (production). Must be LAST so it doesn't
+        // intercept /colyseus or other API routes above.
+        app.use(express.static(path.join(__dirname, "../../client/dist")));
+        app.get(/^(?!\/colyseus|\/hello_world).*/, (req, res) => {
+            res.sendFile(path.join(__dirname, "../../client/dist/index.html"));
+        });
     },
 
 
