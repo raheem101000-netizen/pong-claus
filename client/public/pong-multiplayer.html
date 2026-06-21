@@ -9,26 +9,15 @@
 html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: -apple-system, 'Segoe UI', sans-serif; }
 #gw { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; }
 #game-shell { position: relative; width: 100%; max-width: 420px; }
-#hud { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; background: rgba(0,0,0,0.95); border-radius: 8px 8px 0 0; }
-#hud-balance { font-size: 20px; font-weight: 700; font-family: monospace; color: #4CFF6C; }
-#hud-mid { text-align: center; }
-#hud-match { font-size: 11px; color: rgba(255,255,255,0.45); }
-#hud-wins  { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.7); margin-top: 1px; }
-#hud-right { text-align: right; }
-#hud-diff  { font-size: 11px; color: rgba(255,255,255,0.45); }
-#hud-tier  { font-size: 12px; font-weight: 700; letter-spacing: 1px; margin-top: 1px; color: #4CFF6C; }
-#phase-bar { display: flex; gap: 3px; padding: 5px 14px; background: rgba(0,0,0,0.8); }
-.phase-seg { height: 4px; border-radius: 2px; flex: 1; opacity: 0.25; transition: opacity 0.3s; }
-.phase-seg.done    { opacity: 1; }
-.phase-seg.current { opacity: 1; animation: pseg 1s infinite; }
-@keyframes pseg { 0%,100%{opacity:1} 50%{opacity:0.4} }
+#hud { display: flex; align-items: center; justify-content: center; padding: 10px 14px; background: rgba(0,0,0,0.95); border-radius: 8px 8px 0 0; }
+#hud-wins  { font-size: 22px; font-weight: 700; color: #fff; }
 canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #000; }
-#overlay, #match-result, #series-result, #waiting-screen {
+#overlay, #match-result, #waiting-screen {
   position: absolute; inset: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   background: rgba(0,0,0,0.93); z-index: 10; border-radius: 8px; gap: 0;
 }
-#match-result, #series-result, #waiting-screen { display: none; }
+#match-result, #waiting-screen { display: none; }
 #lobby-title { font-size: 44px; letter-spacing: 14px; font-weight: 300; color: #fff; margin-bottom: 4px; }
 #lobby-sub   { font-size: 11px; letter-spacing: 3px; color: #444; margin-bottom: 24px; }
 #name-input  { background: transparent; border: 1px solid #333; color: #fff; padding: 11px 16px; font-family: monospace; font-size: 14px; width: 240px; border-radius: 4px; text-align: center; margin-bottom: 16px; letter-spacing: 1px; outline: none; }
@@ -47,20 +36,8 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
 #waiting-sub  { font-size: 12px; color: rgba(255,255,255,0.4); letter-spacing: 1px; margin-bottom: 20px; }
 .spinner { width: 28px; height: 28px; border: 3px solid #222; border-top-color: #4CFF6C; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px; }
 @keyframes spin { to { transform: rotate(360deg); } }
-#mr-change  { font-size: 52px; font-weight: 700; margin-bottom: 2px; }
-#mr-score   { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 10px; letter-spacing: 1px; }
-#mr-balance { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
-#mr-match   { font-size: 11px; color: rgba(255,255,255,0.35); margin-bottom: 6px; letter-spacing: 1px; }
-#mr-tally   { display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; max-width: 280px; margin-bottom: 18px; }
-.tdot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid #222; flex-shrink: 0; }
-.tdot.p1 { background: #4CFF6C; }
-.tdot.p2 { background: #4488FF; }
-#mr-waiting { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 8px; letter-spacing: 1px; display: none; }
-#se-title   { font-size: 28px; font-weight: 500; margin-bottom: 4px; }
-#se-payout  { font-size: 56px; font-weight: 700; margin-bottom: 2px; }
-#se-sub     { font-size: 13px; color: rgba(255,255,255,0.45); margin-bottom: 4px; }
-#se-summary { font-size: 11px; color: rgba(255,255,255,0.3); margin-bottom: 6px; }
-#se-tally   { display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; max-width: 280px; margin-bottom: 20px; }
+#mr-change  { font-size: 44px; font-weight: 700; margin-bottom: 8px; }
+#mr-score   { font-size: 32px; font-weight: 700; color: #fff; margin-bottom: 22px; letter-spacing: 1px; }
 #powerup-banner { position: absolute; top: 46%; left: 50%; transform: translate(-50%,-50%); font-size: 13px; letter-spacing: 2px; color: #fff; pointer-events: none; opacity: 0; transition: opacity 0.2s; z-index: 5; text-align: center; text-shadow: 0 0 10px currentColor; white-space: nowrap; }
 #cd-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #fff; font-size: 64px; font-weight: 300; pointer-events: none; opacity: 0; z-index: 9; font-family: monospace; transition: opacity 0.15s; }
 #error-msg { font-size: 11px; color: #FF4444; letter-spacing: 1px; margin-top: 6px; min-height: 16px; }
@@ -71,23 +48,14 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
 <div id="gw">
   <div id="game-shell">
     <div id="hud">
-      <div id="hud-balance">+$0</div>
-      <div id="hud-mid">
-        <div id="hud-match">Match 1 / 20</div>
-        <div id="hud-wins">0 — 0</div>
-      </div>
-      <div id="hud-right">
-        <div id="hud-diff">Difficulty</div>
-        <div id="hud-tier">EASY</div>
-      </div>
+      <div id="hud-wins">0 — 0</div>
     </div>
-    <div id="phase-bar"></div>
     <canvas id="canvas"></canvas>
     <div id="powerup-banner"></div>
     <div id="cd-msg"></div>
     <div id="overlay">
       <div id="lobby-title">PONG</div>
-      <div id="lobby-sub">MULTIPLAYER · 20 MATCHES · $10/MATCH</div>
+      <div id="lobby-sub">MULTIPLAYER · FIRST TO 10</div>
       <input id="name-input" type="text" maxlength="12" placeholder="Your name" autocomplete="off" />
       <div class="menu-row">
         <button class="btn-green" id="btn-create">Create Room</button>
@@ -107,23 +75,9 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
       <button class="btn" style="margin-top:20px;" id="btn-cancel">Cancel</button>
     </div>
     <div id="match-result">
-      <div id="mr-change">+$10</div>
-      <div id="mr-score">3 — 1</div>
-      <div id="mr-balance">Balance: +$10</div>
-      <div id="mr-match">Match 1 of 20</div>
-      <div id="mr-tally"></div>
-      <button class="btn-green" id="btn-next-match">Next Match →</button>
-      <div id="mr-waiting">Waiting for opponent...</div>
-      <button class="btn" style="margin-top:10px;" id="btn-quit-match">Quit Series</button>
-    </div>
-    <div id="series-result">
-      <div id="se-title">Session Complete</div>
-      <div id="se-payout">$0</div>
-      <div id="se-sub"></div>
-      <div id="se-summary"></div>
-      <div id="se-tally"></div>
-      <button class="btn-gold" id="btn-cashout" style="display:none;">Cash Out</button>
-      <button class="btn-green" id="btn-play-again" style="margin-top:10px;">Play Again</button>
+      <div id="mr-change">YOU WIN!</div>
+      <div id="mr-score">10 — 7</div>
+      <button class="btn-green" id="btn-next-match">Play Again</button>
       <button class="btn" style="margin-top:10px;" id="btn-lobby">Back to Lobby</button>
     </div>
     <div id="role-label"></div>
@@ -131,11 +85,6 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
 </div>
 <script src="/colyseus-adapter.js"></script>
 <script>
-const TOTAL_MATCHES = 20;
-const MATCH_STAKE   = 10;
-const TIER_LABELS   = ['EASY','EASY+','MEDIUM','MEDIUM+','HARD','HARD+','MAX'];
-const TIER_COLORS   = ['#4CFF6C','#4CFF6C','#FFD700','#FFD700','#FF8C00','#FF4444','#FF4444'];
-function getMatchTier(m) { return Math.min(Math.floor((m-1)/3), 6); }
 const canvas  = document.getElementById('canvas');
 const ctx     = canvas.getContext('2d');
 const cdMsg   = document.getElementById('cd-msg');
@@ -154,8 +103,7 @@ function resize() {
 const browserId = (() => { let id = localStorage.getItem('pong_bid'); if (!id) { id = Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10); localStorage.setItem('pong_bid',id); } return id; })();
 let socket, myRole, myName = '';
 let gameState = null;
-let seriesMatch = 1, myWins = 0, oppWins = 0, myBalance = 0;
-let results = [];
+let myWins = 0, oppWins = 0;
 let gameRunning = false;
 let keys = {};
 let localPaddleX = null; // input intent only — NOT used for drawing
@@ -195,7 +143,7 @@ function connect() {
     document.getElementById('overlay').style.display = 'none';
     document.getElementById('waiting-screen').style.display = 'none';
     document.getElementById('role-label').textContent = myName + ' — ' + paddlePos + ' PADDLE';
-    updateHUD(1, 0, 0, 0);
+    updateHUD(0, 0);
   });
   socket.on('opponentName', ({ name }) => {
     document.getElementById('role-label').textContent = myName + ' vs ' + name;
@@ -212,23 +160,11 @@ function connect() {
   });
   socket.on('matchEnd', (data) => {
     gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
-    seriesMatch = data.match;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
-    myBalance = myRole==='p1' ? data.p1Balance : data.p2Balance;
     myWins    = myRole==='p1' ? data.p1Wins    : data.p2Wins;
     oppWins   = myRole==='p1' ? data.p2Wins    : data.p1Wins;
-    results   = data.results;
-    updateHUD(seriesMatch, myWins, oppWins, myBalance);
+    updateHUD(myWins, oppWins);
     showMatchResult(iWon, data);
-  });
-  socket.on('seriesEnd', (data) => {
-    myBalance = myRole==='p1' ? data.p1Balance : data.p2Balance;
-    results = data.results;
-    showSeriesResult();
-  });
-  socket.on('waitingForOpponent', () => {
-    document.getElementById('btn-next-match').style.display = 'none';
-    document.getElementById('mr-waiting').style.display = 'block';
   });
   socket.on('opponentLeft', () => {
     gameRunning = false;
@@ -237,27 +173,8 @@ function connect() {
   });
   socket.on('error', ({ msg }) => showError(msg));
 }
-function updateHUD(match, wins, oppW, balance) {
-  const tier = getMatchTier(match), color = TIER_COLORS[tier], bal = balance;
-  document.getElementById('hud-balance').textContent = (bal>=0?'+':'')+'$'+bal;
-  document.getElementById('hud-balance').style.color = bal>0?'#4CFF6C':bal<0?'#FF4444':'rgba(255,255,255,0.4)';
-  document.getElementById('hud-match').textContent = `Match ${match} / ${TOTAL_MATCHES}`;
-  document.getElementById('hud-wins').textContent  = `${wins} — ${oppW}`;
-  document.getElementById('hud-tier').textContent  = TIER_LABELS[tier];
-  document.getElementById('hud-tier').style.color  = color;
-  buildPhaseBar(match);
-}
-function buildPhaseBar(match) {
-  const bar = document.getElementById('phase-bar');
-  bar.innerHTML = '';
-  for (let i=0; i<TOTAL_MATCHES; i++) {
-    const seg = document.createElement('div');
-    seg.className = 'phase-seg';
-    seg.style.background = TIER_COLORS[getMatchTier(i+1)];
-    if (i+1 < match) seg.classList.add('done');
-    else if (i+1 === match) seg.classList.add('current');
-    bar.appendChild(seg);
-  }
+function updateHUD(wins, oppW) {
+  document.getElementById('hud-wins').textContent = `${wins} — ${oppW}`;
 }
 function draw() {
   ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
@@ -342,35 +259,9 @@ function showMatchResult(iWon, data) {
   const p1s = myRole==='p1' ? data.p1Score : data.p2Score;
   const p2s = myRole==='p1' ? data.p2Score : data.p1Score;
   document.getElementById('mr-score').textContent = `${p1s} — ${p2s}`;
-  document.getElementById('mr-balance').textContent = iWon ? 'You earn $10!' : 'No payout this time';
-  document.getElementById('mr-balance').style.color = iWon ? '#4CFF6C' : '#FF4444';
-  document.getElementById('mr-match').textContent = 'First to 10 points';
-  document.getElementById('btn-next-match').textContent = 'Play Again';
-  document.getElementById('btn-next-match').style.display = 'block';
-  document.getElementById('mr-waiting').style.display = 'none';
   document.getElementById('match-result').style.display = 'flex';
 }
-function showSeriesResult() {
-  document.getElementById('match-result').style.display='none';
-  const profit=myBalance>0;
-  document.getElementById('se-title').textContent='Session Complete';
-  document.getElementById('se-payout').textContent=(myBalance>=0?'+':'')+'$'+myBalance;
-  document.getElementById('se-payout').style.color=profit?'#4CFF6C':myBalance<0?'#FF4444':'rgba(255,255,255,0.4)';
-  document.getElementById('se-sub').textContent=profit?'You finished in profit — cash out your winnings':myBalance===0?'You broke even — no payout':'No payout — finish in positive balance to cash out';
-  document.getElementById('se-summary').textContent=`${myWins} wins / ${oppWins} losses across 20 matches`;
-  document.getElementById('btn-cashout').style.display=profit?'block':'none';
-  buildTally('se-tally', results);
-  document.getElementById('series-result').style.display='flex';
-}
-function buildTally(elId, res) {
-  const el=document.getElementById(elId); el.innerHTML='';
-  for (let i=0; i<TOTAL_MATCHES; i++) {
-    const d=document.createElement('div'); d.className='tdot';
-    if (i<res.length) { const won=(myRole==='p1'&&res[i]==='p1')||(myRole==='p2'&&res[i]==='p2'); d.classList.add(won?'p1':'p2'); }
-    el.appendChild(d);
-  }
-}
-function hideAll() { ['overlay','waiting-screen','match-result','series-result'].forEach(id=>{ document.getElementById(id).style.display='none'; }); }
+function hideAll() { ['overlay','waiting-screen','match-result'].forEach(id=>{ document.getElementById(id).style.display='none'; }); }
 function showError(msg) { document.getElementById('error-msg').textContent=msg; setTimeout(()=>{ document.getElementById('error-msg').textContent=''; },3000); }
 document.addEventListener('keydown', e=>{ keys[e.key]=true; if(['ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault(); });
 document.addEventListener('keyup', e=>{ keys[e.key]=false; });
@@ -393,11 +284,8 @@ canvas.addEventListener('touchend',   e => { e.preventDefault(); }, { passive: f
 document.getElementById('btn-create').onclick=()=>{ myName=document.getElementById('name-input').value.trim()||'Player 1'; connect(); socket.on('connect',()=>socket.emit('createRoom',{name:myName})); };
 document.getElementById('btn-join').onclick=()=>{ const code=document.getElementById('code-input').value.trim(); if(code.length!==4){showError('Enter a 4-digit code');return;} myName=document.getElementById('name-input').value.trim()||'Player 2'; connect(); socket.on('connect',()=>socket.emit('joinRoom',{code,name:myName})); };
 document.getElementById('btn-cancel').onclick=()=>{ if(socket)socket.disconnect(); document.getElementById('waiting-screen').style.display='none'; document.getElementById('overlay').style.display='flex'; };
-document.getElementById('btn-next-match').onclick=()=>{ document.getElementById('btn-next-match').style.display='none'; document.getElementById('mr-waiting').style.display='block'; socket.emit('nextMatch'); document.getElementById('match-result').style.display='none'; };
-document.getElementById('btn-quit-match').onclick=()=>{ if(socket)socket.disconnect(); hideAll(); document.getElementById('overlay').style.display='flex'; };
-document.getElementById('btn-cashout').onclick=()=>{ alert('Cashing out $'+Math.max(0,myBalance)+'! (Stripe integration goes here)'); };
-document.getElementById('btn-play-again').onclick=()=>{ document.getElementById('series-result').style.display='none'; document.getElementById('overlay').style.display='flex'; };
-document.getElementById('btn-lobby').onclick=()=>{ if(socket)socket.disconnect(); document.getElementById('series-result').style.display='none'; document.getElementById('overlay').style.display='flex'; };
+document.getElementById('btn-next-match').onclick=()=>{ if(socket)socket.disconnect(); hideAll(); document.getElementById('overlay').style.display='flex'; };
+document.getElementById('btn-lobby').onclick=()=>{ if(socket)socket.disconnect(); hideAll(); document.getElementById('overlay').style.display='flex'; };
 // Track intended paddle position for sending to server. Runs every rAF so the
 // server gets input as fast as possible — unthrottled, deduplicated by position.
 function paddleLoop() {
@@ -423,7 +311,7 @@ function paddleLoop() {
 }
 paddleLoop();
 window.addEventListener('resize', resize);
-resize(); buildPhaseBar(1); updateHUD(1,0,0,0); draw();
+resize(); updateHUD(0,0); draw();
 
 // Auto-join from rooms lobby
 const urlParams = new URLSearchParams(window.location.search);
