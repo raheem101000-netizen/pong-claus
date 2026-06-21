@@ -16,7 +16,7 @@ interface BallState  { x: number; y: number; vx: number; vy: number; }
 interface PaddleState { x: number; y: number; score: number; }
 interface GameState {
   ball: BallState; p1: PaddleState; p2: PaddleState;
-  delay: number; _pendingDir?: boolean;
+  delay: number; _pendingDir?: boolean; _serveRamp?: number;
 }
 interface PaddleXSample { t: number; x: number; }
 
@@ -184,8 +184,12 @@ export class GameRoom extends Room {
     if (s.delay > 0) {
       s.delay--;
       if (s.delay === 0) {
-        b.vx = BALL_SPEED * (Math.random() > 0.5 ? 1 : -1);
-        b.vy = BALL_SPEED * (s._pendingDir !== false ? 1 : -1);
+        const dirX = Math.random() > 0.5 ? 1 : -1;
+        const dirY = s._pendingDir !== false ? 1 : -1;
+        const SERVE_START = BALL_SPEED * 0.45;
+        b.vx = SERVE_START * dirX;
+        b.vy = SERVE_START * dirY;
+        s._serveRamp = 60;
       }
       return null;
     }
@@ -193,6 +197,18 @@ export class GameRoom extends Room {
     // Rewound paddle x for each player: paddle where they saw it at their screen time.
     const p1x = this.rewindX(this.p1History, now, this.p1LatencyMs, s.p1.x);
     const p2x = this.rewindX(this.p2History, now, this.p2LatencyMs, s.p2.x);
+
+    // Serve ramp: ease ball from 45% to full BALL_SPEED over 60 ticks.
+    if (s._serveRamp && s._serveRamp > 0) {
+      s._serveRamp--;
+      const curSpd = Math.hypot(b.vx, b.vy);
+      if (curSpd < BALL_SPEED && curSpd > 0) {
+        const SERVE_START = BALL_SPEED * 0.45;
+        const targetSpd = Math.min(BALL_SPEED, curSpd + (BALL_SPEED - SERVE_START) / 60);
+        const scale = targetSpd / curSpd;
+        b.vx *= scale; b.vy *= scale;
+      }
+    }
 
     // Sub-step so the ball never moves more than PADDLE_SHORT px per iteration.
     // Guarantees crossed-check fires even at SPEED_MAX.
