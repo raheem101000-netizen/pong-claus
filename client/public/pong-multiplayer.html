@@ -268,7 +268,7 @@ function draw() {
   // Initialise drawn state on first frame of a new match.
   if (drawn.p1x === null) { drawn.p1x = s.p1.x; drawn.p2x = s.p2.x; drawn.bx = s.ball.x; drawn.by = s.ball.y; }
   // Lerp all drawn positions toward server truth each frame — smooth without lying.
-  const L = 0.4;
+  const L = 0.65;
   drawn.p1x += (s.p1.x - drawn.p1x) * L;
   drawn.p2x += (s.p2.x - drawn.p2x) * L;
   const ballJump = Math.hypot(s.ball.x - drawn.bx, s.ball.y - drawn.by);
@@ -407,7 +407,7 @@ function paddleLoop() {
         ? (gameState?.p1?.x ?? S_W/2 - S_PADDLE_LONG/2)
         : (gameState?.p2?.x ?? S_W/2 - S_PADDLE_LONG/2));
     }
-    const pspd = S_W * 0.028;
+    const pspd = S_W * 0.032;
     let left  = keys['ArrowLeft']  || keys['a'] || keys['A'];
     let right = keys['ArrowRight'] || keys['d'] || keys['D'];
     if (myRole === 'p2') { const tmp = left; left = right; right = tmp; }
