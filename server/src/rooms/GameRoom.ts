@@ -21,7 +21,7 @@ const POWERUP_KEYS = Object.keys(POWERUP_TYPES);
 const OBSTACLE_INTERVAL = 480;
 
 interface PlayerSlot { sessionId: string; bid: string | null; name: string; }
-interface BallState  { x: number; y: number; vx: number; vy: number; }
+interface BallState  { x: number; y: number; vx: number; vy: number; lastHitter: 'p1' | 'p2' | null; }
 interface PaddleState { x: number; y: number; score: number; }
 interface PowerupState { type: string; x: number; y: number; r: number; life: number; pulse: number; }
 interface EffectState { type: string; expires: number; }
@@ -44,7 +44,7 @@ function randomPowerupSpawnTicks(): number {
 
 function initGameState(): GameState {
   return {
-    ball: { x: W/2, y: H/2, vx: 0, vy: 0 },
+    ball: { x: W/2, y: H/2, vx: 0, vy: 0, lastHitter: null },
     p1: { x: W/2 - PADDLE_LONG/2, y: H - PADDLE_SHORT - Math.round(H*0.04), score: 0 },
     p2: { x: W/2 - PADDLE_LONG/2, y: Math.round(H*0.04), score: 0 },
     delay: 180, _pendingDir: true,
@@ -326,6 +326,7 @@ export class GameRoom extends Room {
     b.vx = Math.sin(clamped * (Math.PI / 4)) * spd;
     b.vy = Math.cos(clamped * (Math.PI / 4)) * spd * (isP1 ? -1 : 1);
     b.y = isP1 ? p.y - BALL_R - 1 : p.y + PADDLE_SHORT + BALL_R + 1;
+    b.lastHitter = isP1 ? 'p1' : 'p2';
     return true;
   }
 
@@ -333,6 +334,7 @@ export class GameRoom extends Room {
     const s = this.gs!;
     s.ball.x = W/2; s.ball.y = H/2;
     s.ball.vx = 0; s.ball.vy = 0;
+    s.ball.lastHitter = null;
     delete s.activeEffects.ball;
     // 210 ticks @ 60 fps: first 120 (2 s) the client countdown check sees count>3
     // so nothing shows — clean "see the score" pause — then 90 ticks of 3/2/1 serve.
@@ -414,8 +416,10 @@ export class GameRoom extends Room {
     if (!s.powerup) return;
     const b = s.ball;
     if (Math.hypot(b.x - s.powerup.x, b.y - s.powerup.y) < BALL_R + s.powerup.r) {
-      const lastHitter: 'p1' | 'p2' = b.vy > 0 ? 'p2' : 'p1';
-      const victim: 'p1' | 'p2' = lastHitter === 'p1' ? 'p2' : 'p1';
+      // Fresh serve nobody has actually hit yet — no legitimate beneficiary/victim,
+      // so leave the power-up un-consumed rather than crediting a player who never touched it.
+      if (b.lastHitter === null) return;
+      const victim: 'p1' | 'p2' = b.lastHitter === 'p1' ? 'p2' : 'p1';
       this.applyPowerup(s.powerup.type, victim);
       s.powerup = null;
       s.powerupSpawnIn = randomPowerupSpawnTicks();
