@@ -106,6 +106,19 @@ let gameState = null;
 let myWins = 0, oppWins = 0;
 let gameRunning = false;
 let keys = {};
+const POWERUP_TYPES = {
+  ice:    { emoji: '❄️',  color: '#00cfff' },
+  fire:   { emoji: '🔥',  color: '#ff6600' },
+  shrink: { emoji: '🔒',  color: '#cc44ff' },
+  ghost:  { emoji: '👻',  color: '#aaffaa' },
+};
+const banner = document.getElementById('powerup-banner');
+let bannerTimer = null, lastBannerSeq = 0;
+function showPowerupBanner(text, color) {
+  banner.textContent = text; banner.style.color = color; banner.style.opacity = '1';
+  if (bannerTimer) clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => { banner.style.opacity = '0'; }, 1800);
+}
 let localPaddleX = null; // input intent only — NOT used for drawing
 let lastSentX    = null;
 // Smoothly interpolated draw state — lerps toward server truth each frame
@@ -149,7 +162,7 @@ function connect() {
     document.getElementById('role-label').textContent = myName + ' vs ' + name;
   });
   socket.on('countdown', ({ count }) => {
-    if (count === 3) { localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null; }
+    if (count === 3) { localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null; lastBannerSeq = 0; }
     cdMsg.textContent = count; cdMsg.style.opacity = '1';
     setTimeout(() => { cdMsg.style.opacity = '0'; }, 800);
   });
@@ -157,6 +170,10 @@ function connect() {
     gameState = s; gameRunning = true;
     if (s.p1.score !== lastP1Score) { scoredWho = 'p1'; lastP1Score = s.p1.score; }
     if (s.p2.score !== lastP2Score) { scoredWho = 'p2'; lastP2Score = s.p2.score; }
+    if (s.bannerSeq && s.bannerSeq !== lastBannerSeq) {
+      lastBannerSeq = s.bannerSeq;
+      showPowerupBanner(s.bannerText, s.bannerColor);
+    }
   });
   socket.on('matchEnd', (data) => {
     gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
@@ -194,7 +211,7 @@ function draw() {
 
   const flip = myRole === 'p2';
   const flipY   = (sy) => flip ? (S_H - sy - PADDLE_SHORT_S) : sy;
-  const mirrorX = (sx) => flip ? (S_W - sx - S_PADDLE_LONG) : sx;
+  const mirrorX = (sx, len) => flip ? (S_W - sx - len) : sx;
   const myDrawnX  = myRole === 'p1' ? drawn.p1x : drawn.p2x;
   const oppDrawnX = myRole === 'p1' ? drawn.p2x : drawn.p1x;
   const myServerY  = myRole === 'p1' ? s.p1.y : s.p2.y;
@@ -214,24 +231,78 @@ function draw() {
     });
   }
 
+  const effects = s.activeEffects || {};
+
+  // Obstacles
+  for (const o of (s.obstacles || [])) {
+    const alpha = Math.min(1, o.life/60) * 0.85;
+    const pulse = Math.sin(Date.now()/200)*0.15+0.7;
+    const osx = flip ? (S_W - o.x - o.w) : o.x;
+    const osy = flip ? (S_H - o.y - o.h) : o.y;
+    ctx.fillStyle = `rgba(255,80,80,${alpha*pulse})`;
+    ctx.shadowColor = 'rgba(255,60,60,0.6)'; ctx.shadowBlur = 8;
+    ctx.fillRect(osx*(W/S_W), osy*(H/S_H), o.w*(W/S_W), o.h*(H/S_H));
+    ctx.shadowBlur = 0;
+  }
+
+  // Power-up
+  if (s.powerup) {
+    const def = POWERUP_TYPES[s.powerup.type] || { emoji: '?', color: '#fff' };
+    const pulse = 0.75 + Math.sin(s.powerup.pulse*0.12)*0.25;
+    const r = Math.round(Math.min(W,H)*0.042) * pulse;
+    const px = (flip ? (S_W - s.powerup.x) : s.powerup.x) * (W/S_W);
+    const py = (flip ? (S_H - s.powerup.y) : s.powerup.y) * (H/S_H);
+    ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2);
+    ctx.fillStyle = def.color+'33'; ctx.fill();
+    ctx.strokeStyle = def.color; ctx.lineWidth = 2; ctx.stroke();
+    ctx.font = `${Math.round(r*1.2)}px serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+    ctx.fillText(def.emoji, px, py); ctx.textBaseline = 'alphabetic';
+  }
+
+  // Ball (effect-tinted)
+  const ballEff  = effects.ball;
+  const isFire   = ballEff && ballEff.type === 'fire';
+  const isIce    = ballEff && ballEff.type === 'ice';
+  const isGhost  = ballEff && ballEff.type === 'ghost';
   ctx.beginPath();
   const ballSX = flip ? (S_W - drawn.bx) : drawn.bx;
   const ballSY = flip ? (S_H - drawn.by) : drawn.by;
   ctx.arc(ballSX*(W/S_W), ballSY*(H/S_H), BALL_R, 0, Math.PI*2);
-  ctx.fillStyle='#fff'; ctx.fill();
+  if (isFire)       { ctx.fillStyle='#ff6600'; ctx.shadowColor='#ff4400'; ctx.shadowBlur=14; }
+  else if (isIce)   { ctx.fillStyle='#00cfff'; ctx.shadowColor='#00aaff'; ctx.shadowBlur=12; }
+  else if (isGhost) { ctx.fillStyle='rgba(180,255,180,0.45)'; ctx.shadowBlur=0; }
+  else              { ctx.fillStyle='#fff'; ctx.shadowBlur=0; }
+  ctx.fill(); ctx.shadowBlur=0;
 
-  const myX  = mirrorX(myDrawnX)  * (W/S_W);
-  const oppX = mirrorX(oppDrawnX) * (W/S_W);
+  // Paddles (dynamic length for shrink, glow for frozen)
+  const myEff  = myRole === 'p1' ? effects.p1 : effects.p2;
+  const oppEff = myRole === 'p1' ? effects.p2 : effects.p1;
+  const myShrunk = myEff && myEff.type === 'shrink', oppShrunk = oppEff && oppEff.type === 'shrink';
+  const myFrozen = myEff && myEff.type === 'frozen', oppFrozen = oppEff && oppEff.type === 'frozen';
+  const myLenS  = myShrunk  ? S_PADDLE_LONG*0.45 : S_PADDLE_LONG;
+  const oppLenS = oppShrunk ? S_PADDLE_LONG*0.45 : S_PADDLE_LONG;
+  const myLenC  = myShrunk  ? PADDLE_LONG*0.45 : PADDLE_LONG;
+  const oppLenC = oppShrunk ? PADDLE_LONG*0.45 : PADDLE_LONG;
+
+  const myX  = mirrorX(myDrawnX, myLenS)   * (W/S_W);
+  const oppX = mirrorX(oppDrawnX, oppLenS) * (W/S_W);
   const myY  = flipY(myServerY)   * (H/S_H);
   const oppY = flipY(oppServerY)  * (H/S_H);
-  ctx.fillStyle = '#4CFF6C';
-  ctx.fillRect(myX, myY, PADDLE_LONG, PADDLE_SHORT);
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(oppX, oppY, PADDLE_LONG, PADDLE_SHORT);
+  ctx.shadowBlur = myFrozen?10:0; ctx.shadowColor = myFrozen?'#00cfff':'transparent';
+  ctx.fillStyle = myFrozen?'#00cfff':'#4CFF6C';
+  ctx.fillRect(myX, myY, myLenC, PADDLE_SHORT); ctx.shadowBlur=0;
+  ctx.shadowBlur = oppFrozen?10:0; ctx.shadowColor = oppFrozen?'#00cfff':'transparent';
+  ctx.fillStyle = oppFrozen?'#00cfff':'#fff';
+  ctx.fillRect(oppX, oppY, oppLenC, PADDLE_SHORT); ctx.shadowBlur=0;
   const fs=Math.round(Math.min(W,H)*0.1);
   ctx.font=`${fs}px monospace`; ctx.textAlign='center'; ctx.fillStyle='#1a1a1a';
   ctx.fillText(s.p2.score, W/2, H/2-fs*0.15);
   ctx.fillText(s.p1.score, W/2, H/2+fs);
+  const is=Math.round(Math.min(W,H)*0.026);
+  ctx.font=`${is}px serif`; ctx.textAlign='center';
+  if (effects.p1) { const d=POWERUP_TYPES[effects.p1.type]||{}; ctx.fillText(d.emoji||'', W/2+fs*0.55, H/2+fs*1.3); }
+  if (effects.p2) { const d=POWERUP_TYPES[effects.p2.type]||{}; ctx.fillText(d.emoji||'', W/2+fs*0.55, H/2-fs*0.45); }
   if (s.delay > 0) {
     const count = Math.ceil(s.delay / 30);
     if (count > 0 && count <= 3) {
