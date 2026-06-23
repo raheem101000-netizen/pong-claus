@@ -161,7 +161,7 @@ td.room-enter{text-align:right;}
   <div id="room-detail">
     <div class="room-detail-header">
       <h2 id="rh-name">Room</h2>
-      <div class="room-code-wrap">
+      <div class="room-code-wrap" id="room-code-wrap">
         <div class="room-code-label">ROOM CODE</div>
         <div class="room-code-val" id="room-code-val">----</div>
       </div>
@@ -248,7 +248,7 @@ socket.on('room:open',   ()=>socket.emit('room:list'));
 socket.on('room:close',  ()=>socket.emit('room:list'));
 socket.on('room:update', ()=>socket.emit('room:list'));
 
-socket.on('room:created', ({room})=>{ myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status('Room created — code: '+room.code,'ok'); });
+socket.on('room:created', ({room})=>{ myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
 socket.on('room:joined',  ({room})=>{ myRoom=room; isMaster=false; isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); });
 socket.on('room:state',   room=>{ myRoom=room; renderPlayers(room); updateActions(); });
 socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); status(player.name+' joined','ok'); });
@@ -292,6 +292,7 @@ function joinRoom(id) {
 function renderDetail(room) {
   document.getElementById('rh-name').textContent=room.name;
   document.getElementById('room-code-val').textContent=room.code;
+  document.getElementById('room-code-wrap').style.display=(room.open===false)?'block':'none';
   renderPlayers(room); updateActions();
 }
 
