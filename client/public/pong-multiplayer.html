@@ -196,8 +196,7 @@ function connect() {
   socket.on('error', ({ msg }) => showError(msg));
 }
 function backToLobbyURL() {
-  const roomCode = new URLSearchParams(location.search).get('room') || '';
-  return '/rooms.html?room=' + encodeURIComponent(roomCode) + '&name=' + encodeURIComponent(myName);
+  return '/rooms.html?name=' + encodeURIComponent(myName);
 }
 function updateHUD(wins, oppW) {
   document.getElementById('hud-wins').textContent = `${wins} — ${oppW}`;
