@@ -9,8 +9,8 @@
 html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: -apple-system, 'Segoe UI', sans-serif; }
 #gw { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; }
 #game-shell { position: relative; width: 100%; max-width: 420px; }
-#hud { display: flex; align-items: center; justify-content: center; padding: 10px 14px; background: rgba(0,0,0,0.95); border-radius: 8px 8px 0 0; }
-#hud-wins  { font-size: 22px; font-weight: 700; color: #fff; }
+#hud { display: flex; align-items: center; justify-content: center; padding: 10px 14px; background: rgba(0,0,0,0.95); border-radius: 8px 8px 0 0; overflow: hidden; }
+#hud-wins  { font-size: 18px; font-weight: 700; color: #fff; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #000; }
 #overlay, #match-result, #waiting-screen {
   position: absolute; inset: 0;
@@ -100,7 +100,7 @@ function resize() {
   BALL_R = Math.round(Math.min(W,H) * 0.018);
 }
 const browserId = (() => { let id = localStorage.getItem('pong_bid'); if (!id) { id = Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10); localStorage.setItem('pong_bid',id); } return id; })();
-let socket, myRole, myName = '';
+let socket, myRole, myName = '', oppName = '';
 let gameState = null;
 let gameRunning = false;
 let keys = {};
@@ -157,6 +157,7 @@ function connect() {
     updateHUD(0, 0);
   });
   socket.on('opponentName', ({ name }) => {
+    oppName = name;
     document.getElementById('role-label').textContent = myName + ' vs ' + name;
   });
   socket.on('countdown', ({ count }) => {
@@ -198,8 +199,10 @@ function connect() {
 function backToLobbyURL() {
   return '/rooms.html?name=' + encodeURIComponent(myName);
 }
-function updateHUD(wins, oppW) {
-  document.getElementById('hud-wins').textContent = `${wins} — ${oppW}`;
+function updateHUD(myScore, oppScore) {
+  const left  = myName || 'You';
+  const right = oppName || 'Opponent';
+  document.getElementById('hud-wins').textContent = `${left}  ${myScore} — ${oppScore}  ${right}`;
 }
 function draw() {
   ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
