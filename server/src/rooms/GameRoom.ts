@@ -1,4 +1,5 @@
 import { Room, Client } from "@colyseus/core";
+import { matchEvents } from "../matchEvents";
 
 const TICK_RATE     = 60;
 const POINTS_TO_WIN = 10;
@@ -65,8 +66,7 @@ export class GameRoom extends Room {
   private broadcastCounter = 0;
   private p1Wins = 0;
   private p2Wins = 0;
-  private matchOver = false;
-  private rematchReady = new Set<string>();
+  private lobbyCode: string | null = null;
 
   // Lag compensation: per-player one-way latency and paddle position history.
   private p1LatencyMs = 0;
@@ -74,7 +74,9 @@ export class GameRoom extends Room {
   private p1History: PaddleXSample[] = [];
   private p2History: PaddleXSample[] = [];
 
-  onCreate() {
+  onCreate(options: { lobbyCode?: string }) {
+    this.lobbyCode = options?.lobbyCode || null;
+
     this.onMessage("joinRoom", (client: Client, data: { code?: string; name?: string; bid?: string }) => {
       const name = data.name || 'Player';
       const bid = data.bid || null;
@@ -138,27 +140,6 @@ export class GameRoom extends Room {
       if (idx === 1) this.p2LatencyMs = clamped;
     });
 
-    this.onMessage("rematch", (client: Client) => {
-      if (!this.matchOver) return;
-      if (!this.gameJoined.find(p => p.sessionId === client.sessionId)) return;
-      this.rematchReady.add(client.sessionId);
-      if (this.rematchReady.size >= 2 && this.gameJoined.length === 2) {
-        this.rematchReady.clear();
-        this.matchOver = false;
-        this.startCountdown();
-      } else {
-        client.send('waitingForOpponent');
-      }
-    });
-
-    this.onMessage("leaveRoom", (client: Client) => {
-      const idx = this.gameJoined.findIndex(p => p.sessionId === client.sessionId);
-      if (idx === -1) return;
-      this.gameJoined.splice(idx, 1);
-      this.rematchReady.delete(client.sessionId);
-      if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
-      this.broadcast('opponentLeft', undefined, { except: client });
-    });
   }
 
   onJoin(_client: Client) {}
@@ -510,8 +491,6 @@ export class GameRoom extends Room {
     const s = this.gs!;
     const p1won = winner === 'p1';
     if (p1won) this.p1Wins++; else this.p2Wins++;
-    this.matchOver = true;
-    this.rematchReady.clear();
     this.broadcast('matchEnd', {
       winner,
       p1Score: s.p1.score,
@@ -519,5 +498,6 @@ export class GameRoom extends Room {
       p1Wins: this.p1Wins, p2Wins: this.p2Wins
     });
     this.gs = null;
+    if (this.lobbyCode) matchEvents.emit('matchEnded', { lobbyCode: this.lobbyCode });
   }
 }

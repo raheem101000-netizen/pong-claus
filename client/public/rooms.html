@@ -390,6 +390,14 @@ function joinByCode(){ if(!myName){status('Set your name first','err');return;} 
 const params=new URLSearchParams(window.location.search);
 if(params.get('name')){ myName=params.get('name'); document.getElementById('name-input').value=myName; localStorage.setItem('pong_name',myName); }
 
+// Returning from a finished match (pong-multiplayer.html "Back to Lobby")
+// carries the room code — auto-rejoin it instead of landing on the bare list.
+// emit() queues until the lobby_room connection is established, so this is
+// safe to call immediately. If the room is gone (e.g. nobody came back in
+// time), room:error fires and we just fall back to the normal list view.
+const roomCodeFromURL=params.get('room');
+if(roomCodeFromURL && myName){ socket.emit('room:join',{code:roomCodeFromURL,playerName:myName}); }
+
 showList();
 </script>
 </body>

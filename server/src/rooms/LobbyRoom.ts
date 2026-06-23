@@ -1,4 +1,5 @@
 import { Room, Client, matchMaker } from "@colyseus/core";
+import { matchEvents } from "../matchEvents";
 
 interface PlayerData {
   id: string;
@@ -114,14 +115,23 @@ export class LobbyRoom extends Room {
       if (!guestReady) { client.send('room:error', { message: 'Waiting for opponent to ready up' }); return; }
 
       try {
-        const gameRoom = await matchMaker.createRoom("game_room", {});
+        const gameRoom = await matchMaker.createRoom("game_room", { lobbyCode: code });
         room.started = true;
         this.broadcastList();
         this.sendToRoom(room, 'room:game:start', {
           code: gameRoom.roomId,
           players: players.map(serializePlayer)
         });
-        setTimeout(() => { delete this.lobbyRooms[code]; }, 60000);
+        // Safety net: if the match never reports ending (e.g. abandoned mid-game),
+        // release the room after a long timeout instead of leaving it stuck forever.
+        const ABANDONED_TIMEOUT_MS = 30 * 60 * 1000;
+        setTimeout(() => {
+          const r = this.lobbyRooms[code];
+          if (r && r.started) {
+            r.started = false;
+            if (Object.keys(r.players).length === 0) { delete this.lobbyRooms[code]; this.broadcastList(); }
+          }
+        }, ABANDONED_TIMEOUT_MS);
       } catch (e) {
         client.send('room:error', { message: 'Failed to start game' });
       }
@@ -138,6 +148,25 @@ export class LobbyRoom extends Room {
 
     this.onMessage("room:leave", (client: Client) => {
       this.handleLeave(client);
+    });
+
+    // GameRoom emits this once a match ends. The lobby room stays alive while
+    // started=true (players are away playing) — flip it back so room:join lets
+    // the original players back in, then give them a grace window to actually
+    // return before the room is cleaned up.
+    matchEvents.on('matchEnded', ({ lobbyCode }: { lobbyCode: string }) => {
+      const room = this.lobbyRooms[lobbyCode];
+      if (!room) return;
+      room.started = false;
+      this.broadcastList();
+      const GRACE_MS = 2 * 60 * 1000;
+      setTimeout(() => {
+        const r = this.lobbyRooms[lobbyCode];
+        if (r && !r.started && Object.keys(r.players).length === 0) {
+          delete this.lobbyRooms[lobbyCode];
+          this.broadcastList();
+        }
+      }, GRACE_MS);
     });
   }
 
@@ -159,8 +188,12 @@ export class LobbyRoom extends Room {
 
     this.sendToRoom(room, 'room:player:leave', { id: client.sessionId });
 
+    // While a match is in progress (started=true) both players are away
+    // playing — keep the room alive so they can rejoin it once the match
+    // ends (see the matchEnded listener above), instead of deleting it the
+    // instant their lobby connections drop.
     if (Object.keys(room.players).length === 0) {
-      delete this.lobbyRooms[code];
+      if (!room.started) delete this.lobbyRooms[code];
     } else if (room.master === client.sessionId) {
       const newMasterId = Object.keys(room.players)[0];
       room.master = newMasterId;
