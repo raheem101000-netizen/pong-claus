@@ -38,6 +38,7 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
 @keyframes spin { to { transform: rotate(360deg); } }
 #mr-change  { font-size: 44px; font-weight: 700; margin-bottom: 8px; }
 #mr-score   { font-size: 32px; font-weight: 700; color: #fff; margin-bottom: 22px; letter-spacing: 1px; }
+#mr-waiting { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 10px; letter-spacing: 1px; display: none; }
 #powerup-banner { position: absolute; top: 46%; left: 50%; transform: translate(-50%,-50%); font-size: 13px; letter-spacing: 2px; color: #fff; pointer-events: none; opacity: 0; transition: opacity 0.2s; z-index: 5; text-align: center; text-shadow: 0 0 10px currentColor; white-space: nowrap; }
 #cd-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #fff; font-size: 64px; font-weight: 300; pointer-events: none; opacity: 0; z-index: 9; font-family: monospace; transition: opacity 0.15s; }
 #error-msg { font-size: 11px; color: #FF4444; letter-spacing: 1px; margin-top: 6px; min-height: 16px; }
@@ -78,7 +79,8 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
       <div id="mr-change">YOU WIN!</div>
       <div id="mr-score">10 — 7</div>
       <button class="btn-green" id="btn-next-match">Play Again</button>
-      <button class="btn" style="margin-top:10px;" id="btn-lobby">Back to Lobby</button>
+      <button class="btn" style="margin-top:10px;" id="btn-lobby">Leave Room</button>
+      <div id="mr-waiting">Waiting for opponent...</div>
     </div>
     <div id="role-label"></div>
   </div>
@@ -162,7 +164,10 @@ function connect() {
     document.getElementById('role-label').textContent = myName + ' vs ' + name;
   });
   socket.on('countdown', ({ count }) => {
-    if (count === 3) { localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null; lastBannerSeq = 0; }
+    if (count === 3) {
+      localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null; lastBannerSeq = 0;
+      document.getElementById('match-result').style.display = 'none';
+    }
     cdMsg.textContent = count; cdMsg.style.opacity = '1';
     setTimeout(() => { cdMsg.style.opacity = '0'; }, 800);
   });
@@ -185,8 +190,15 @@ function connect() {
   });
   socket.on('opponentLeft', () => {
     gameRunning = false;
-    showError('Opponent disconnected');
-    setTimeout(() => { hideAll(); document.getElementById('overlay').style.display = 'flex'; }, 2500);
+    showError('Opponent left the game');
+    setTimeout(() => {
+      if (socket) socket.disconnect();
+      window.location.href = '/rooms.html' + (myName ? ('?name=' + encodeURIComponent(myName)) : '');
+    }, 2500);
+  });
+  socket.on('waitingForOpponent', () => {
+    document.getElementById('btn-next-match').style.display = 'none';
+    document.getElementById('mr-waiting').style.display = 'block';
   });
   socket.on('error', ({ msg }) => showError(msg));
 }
@@ -330,9 +342,11 @@ function showMatchResult(iWon, data) {
   const p1s = myRole==='p1' ? data.p1Score : data.p2Score;
   const p2s = myRole==='p1' ? data.p2Score : data.p1Score;
   document.getElementById('mr-score').textContent = `${p1s} — ${p2s}`;
+  document.getElementById('btn-next-match').textContent = 'Play Again';
+  document.getElementById('btn-next-match').style.display = '';
+  document.getElementById('mr-waiting').style.display = 'none';
   document.getElementById('match-result').style.display = 'flex';
 }
-function hideAll() { ['overlay','waiting-screen','match-result'].forEach(id=>{ document.getElementById(id).style.display='none'; }); }
 function showError(msg) { document.getElementById('error-msg').textContent=msg; setTimeout(()=>{ document.getElementById('error-msg').textContent=''; },3000); }
 document.addEventListener('keydown', e=>{ keys[e.key]=true; if(['ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault(); });
 document.addEventListener('keyup', e=>{ keys[e.key]=false; });
@@ -355,8 +369,15 @@ canvas.addEventListener('touchend',   e => { e.preventDefault(); }, { passive: f
 document.getElementById('btn-create').onclick=()=>{ myName=document.getElementById('name-input').value.trim()||'Player 1'; connect(); socket.on('connect',()=>socket.emit('createRoom',{name:myName})); };
 document.getElementById('btn-join').onclick=()=>{ const code=document.getElementById('code-input').value.trim(); if(code.length!==4){showError('Enter a 4-digit code');return;} myName=document.getElementById('name-input').value.trim()||'Player 2'; connect(); socket.on('connect',()=>socket.emit('joinRoom',{code,name:myName})); };
 document.getElementById('btn-cancel').onclick=()=>{ if(socket)socket.disconnect(); document.getElementById('waiting-screen').style.display='none'; document.getElementById('overlay').style.display='flex'; };
-document.getElementById('btn-next-match').onclick=()=>{ if(socket)socket.disconnect(); hideAll(); document.getElementById('overlay').style.display='flex'; };
-document.getElementById('btn-lobby').onclick=()=>{ if(socket)socket.disconnect(); hideAll(); document.getElementById('overlay').style.display='flex'; };
+document.getElementById('btn-next-match').onclick=()=>{
+  document.getElementById('btn-next-match').style.display='none';
+  document.getElementById('mr-waiting').style.display='block';
+  if (socket) socket.emit('rematch');
+};
+document.getElementById('btn-lobby').onclick=()=>{
+  if (socket) { socket.emit('leaveRoom'); socket.disconnect(); }
+  window.location.href = '/rooms.html' + (myName ? ('?name=' + encodeURIComponent(myName)) : '');
+};
 // Track intended paddle position for sending to server. Runs every rAF so the
 // server gets input as fast as possible — unthrottled, deduplicated by position.
 function paddleLoop() {
