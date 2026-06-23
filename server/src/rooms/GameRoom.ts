@@ -2,7 +2,6 @@ import { Room, Client } from "@colyseus/core";
 
 const TICK_RATE     = 60;
 const POINTS_TO_WIN = 10;
-const TOTAL_MATCHES = 1;
 const W = 400, H = 660;
 const BALL_R       = Math.round(Math.min(W, H) * 0.018);
 const PADDLE_LONG  = Math.round(W * 0.28);
@@ -64,13 +63,10 @@ export class GameRoom extends Room {
   private gs: GameState | null = null;
   private gameInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastCounter = 0;
-  private seriesMatch = 1;
   private p1Wins = 0;
   private p2Wins = 0;
-  private p1Balance = 0;
-  private p2Balance = 0;
-  private results: string[] = [];
-  private nextMatchReady = new Set<string>();
+  private matchOver = false;
+  private rematchReady = new Set<string>();
 
   // Lag compensation: per-player one-way latency and paddle position history.
   private p1LatencyMs = 0;
@@ -142,15 +138,26 @@ export class GameRoom extends Room {
       if (idx === 1) this.p2LatencyMs = clamped;
     });
 
-    this.onMessage("nextMatch", (client: Client) => {
+    this.onMessage("rematch", (client: Client) => {
+      if (!this.matchOver) return;
       if (!this.gameJoined.find(p => p.sessionId === client.sessionId)) return;
-      this.nextMatchReady.add(client.sessionId);
-      if (this.nextMatchReady.size >= 2) {
-        this.nextMatchReady.clear();
-        this.startNextMatch();
+      this.rematchReady.add(client.sessionId);
+      if (this.rematchReady.size >= 2 && this.gameJoined.length === 2) {
+        this.rematchReady.clear();
+        this.matchOver = false;
+        this.startCountdown();
       } else {
         client.send('waitingForOpponent');
       }
+    });
+
+    this.onMessage("leaveRoom", (client: Client) => {
+      const idx = this.gameJoined.findIndex(p => p.sessionId === client.sessionId);
+      if (idx === -1) return;
+      this.gameJoined.splice(idx, 1);
+      this.rematchReady.delete(client.sessionId);
+      if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
+      this.broadcast('opponentLeft', undefined, { except: client });
     });
   }
 
@@ -502,32 +509,15 @@ export class GameRoom extends Room {
   private endMatch(winner: string) {
     const s = this.gs!;
     const p1won = winner === 'p1';
-    if (p1won) { this.p1Wins++; this.p1Balance += 10; this.p2Balance -= 10; }
-    else        { this.p2Wins++; this.p2Balance += 10; this.p1Balance -= 10; }
-    this.results.push(winner);
+    if (p1won) this.p1Wins++; else this.p2Wins++;
+    this.matchOver = true;
+    this.rematchReady.clear();
     this.broadcast('matchEnd', {
       winner,
       p1Score: s.p1.score,
       p2Score: s.p2.score,
-      seriesOver: this.seriesMatch >= TOTAL_MATCHES,
-      match: this.seriesMatch,
-      p1Wins: this.p1Wins, p2Wins: this.p2Wins,
-      p1Balance: this.p1Balance, p2Balance: this.p2Balance,
-      results: this.results
+      p1Wins: this.p1Wins, p2Wins: this.p2Wins
     });
-  }
-
-  private startNextMatch() {
-    if (this.seriesMatch >= TOTAL_MATCHES) {
-      this.broadcast('seriesEnd', {
-        p1Wins: this.p1Wins, p2Wins: this.p2Wins,
-        p1Balance: this.p1Balance, p2Balance: this.p2Balance,
-        results: this.results
-      });
-      return;
-    }
-    this.seriesMatch++;
     this.gs = null;
-    this.startCountdown();
   }
 }
