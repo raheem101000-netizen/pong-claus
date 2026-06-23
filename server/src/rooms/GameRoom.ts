@@ -1,5 +1,4 @@
 import { Room, Client } from "@colyseus/core";
-import { matchEvents } from "../matchEvents";
 
 const TICK_RATE     = 60;
 const POINTS_TO_WIN = 10;
@@ -66,7 +65,6 @@ export class GameRoom extends Room {
   private broadcastCounter = 0;
   private p1Wins = 0;
   private p2Wins = 0;
-  private lobbyCode: string | null = null;
 
   // Lag compensation: per-player one-way latency and paddle position history.
   private p1LatencyMs = 0;
@@ -74,9 +72,7 @@ export class GameRoom extends Room {
   private p1History: PaddleXSample[] = [];
   private p2History: PaddleXSample[] = [];
 
-  onCreate(options: { lobbyCode?: string }) {
-    this.lobbyCode = options?.lobbyCode || null;
-
+  onCreate() {
     this.onMessage("joinRoom", (client: Client, data: { code?: string; name?: string; bid?: string }) => {
       const name = data.name || 'Player';
       const bid = data.bid || null;
@@ -498,6 +494,5 @@ export class GameRoom extends Room {
       p1Wins: this.p1Wins, p2Wins: this.p2Wins
     });
     this.gs = null;
-    if (this.lobbyCode) matchEvents.emit('matchEnded', { lobbyCode: this.lobbyCode });
   }
 }
