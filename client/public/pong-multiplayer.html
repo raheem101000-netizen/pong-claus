@@ -12,12 +12,12 @@ html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font
 #hud { display: flex; align-items: center; justify-content: center; padding: 10px 14px; background: rgba(0,0,0,0.95); border-radius: 8px 8px 0 0; }
 #hud-wins  { font-size: 22px; font-weight: 700; color: #fff; }
 canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #000; }
-#overlay, #match-result, #waiting-screen, #room-lobby {
+#overlay, #match-result, #waiting-screen {
   position: absolute; inset: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   background: rgba(0,0,0,0.93); z-index: 10; border-radius: 8px; gap: 0;
 }
-#match-result, #waiting-screen, #room-lobby { display: none; }
+#match-result, #waiting-screen { display: none; }
 #lobby-title { font-size: 44px; letter-spacing: 14px; font-weight: 300; color: #fff; margin-bottom: 4px; }
 #lobby-sub   { font-size: 11px; letter-spacing: 3px; color: #444; margin-bottom: 24px; }
 #name-input  { background: transparent; border: 1px solid #333; color: #fff; padding: 11px 16px; font-family: monospace; font-size: 14px; width: 240px; border-radius: 4px; text-align: center; margin-bottom: 16px; letter-spacing: 1px; outline: none; }
@@ -38,9 +38,6 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
 @keyframes spin { to { transform: rotate(360deg); } }
 #mr-change  { font-size: 44px; font-weight: 700; margin-bottom: 8px; }
 #mr-score   { font-size: 32px; font-weight: 700; color: #fff; margin-bottom: 22px; letter-spacing: 1px; }
-#rl-title    { font-size: 12px; letter-spacing: 3px; color: rgba(255,255,255,0.4); margin-bottom: 8px; }
-#rl-opponent { font-size: 20px; font-weight: 600; color: #fff; margin-bottom: 22px; letter-spacing: 1px; }
-#rl-waiting  { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 10px; letter-spacing: 1px; display: none; }
 #powerup-banner { position: absolute; top: 46%; left: 50%; transform: translate(-50%,-50%); font-size: 13px; letter-spacing: 2px; color: #fff; pointer-events: none; opacity: 0; transition: opacity 0.2s; z-index: 5; text-align: center; text-shadow: 0 0 10px currentColor; white-space: nowrap; }
 #cd-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #fff; font-size: 64px; font-weight: 300; pointer-events: none; opacity: 0; z-index: 9; font-family: monospace; transition: opacity 0.15s; }
 #error-msg { font-size: 11px; color: #FF4444; letter-spacing: 1px; margin-top: 6px; min-height: 16px; }
@@ -82,13 +79,6 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
       <div id="mr-score">10 — 7</div>
       <button class="btn-green" id="btn-back-to-lobby">Back to Lobby</button>
     </div>
-    <div id="room-lobby">
-      <div id="rl-title">ROOM</div>
-      <div id="rl-opponent"></div>
-      <button class="btn-green" id="btn-start-again">Start Match</button>
-      <button class="btn" style="margin-top:10px;" id="btn-leave-room">Leave Room</button>
-      <div id="rl-waiting">Waiting for opponent...</div>
-    </div>
     <div id="role-label"></div>
   </div>
 </div>
@@ -110,7 +100,7 @@ function resize() {
   BALL_R = Math.round(Math.min(W,H) * 0.018);
 }
 const browserId = (() => { let id = localStorage.getItem('pong_bid'); if (!id) { id = Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10); localStorage.setItem('pong_bid',id); } return id; })();
-let socket, myRole, myName = '', oppName = '';
+let socket, myRole, myName = '';
 let gameState = null;
 let myWins = 0, oppWins = 0;
 let gameRunning = false;
@@ -168,14 +158,12 @@ function connect() {
     updateHUD(0, 0);
   });
   socket.on('opponentName', ({ name }) => {
-    oppName = name;
     document.getElementById('role-label').textContent = myName + ' vs ' + name;
   });
   socket.on('countdown', ({ count }) => {
     if (count === 3) {
       localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null; lastBannerSeq = 0;
       document.getElementById('match-result').style.display = 'none';
-      document.getElementById('room-lobby').style.display = 'none';
     }
     cdMsg.textContent = count; cdMsg.style.opacity = '1';
     setTimeout(() => { cdMsg.style.opacity = '0'; }, 800);
@@ -202,14 +190,14 @@ function connect() {
     showError('Opponent left the game');
     setTimeout(() => {
       if (socket) socket.disconnect();
-      window.location.href = '/rooms.html' + (myName ? ('?name=' + encodeURIComponent(myName)) : '');
+      window.location.href = backToLobbyURL();
     }, 2500);
   });
-  socket.on('waitingForOpponent', () => {
-    document.getElementById('btn-start-again').style.display = 'none';
-    document.getElementById('rl-waiting').style.display = 'block';
-  });
   socket.on('error', ({ msg }) => showError(msg));
+}
+function backToLobbyURL() {
+  const roomCode = new URLSearchParams(location.search).get('room') || '';
+  return '/rooms.html?room=' + encodeURIComponent(roomCode) + '&name=' + encodeURIComponent(myName);
 }
 function updateHUD(wins, oppW) {
   document.getElementById('hud-wins').textContent = `${wins} — ${oppW}`;
@@ -353,13 +341,6 @@ function showMatchResult(iWon, data) {
   document.getElementById('mr-score').textContent = `${p1s} — ${p2s}`;
   document.getElementById('match-result').style.display = 'flex';
 }
-function showRoomLobby() {
-  document.getElementById('match-result').style.display = 'none';
-  document.getElementById('rl-opponent').textContent = oppName ? ('vs ' + oppName) : '';
-  document.getElementById('btn-start-again').style.display = '';
-  document.getElementById('rl-waiting').style.display = 'none';
-  document.getElementById('room-lobby').style.display = 'flex';
-}
 function showError(msg) { document.getElementById('error-msg').textContent=msg; setTimeout(()=>{ document.getElementById('error-msg').textContent=''; },3000); }
 document.addEventListener('keydown', e=>{ keys[e.key]=true; if(['ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault(); });
 document.addEventListener('keyup', e=>{ keys[e.key]=false; });
@@ -382,15 +363,9 @@ canvas.addEventListener('touchend',   e => { e.preventDefault(); }, { passive: f
 document.getElementById('btn-create').onclick=()=>{ myName=document.getElementById('name-input').value.trim()||'Player 1'; connect(); socket.on('connect',()=>socket.emit('createRoom',{name:myName})); };
 document.getElementById('btn-join').onclick=()=>{ const code=document.getElementById('code-input').value.trim(); if(code.length!==4){showError('Enter a 4-digit code');return;} myName=document.getElementById('name-input').value.trim()||'Player 2'; connect(); socket.on('connect',()=>socket.emit('joinRoom',{code,name:myName})); };
 document.getElementById('btn-cancel').onclick=()=>{ if(socket)socket.disconnect(); document.getElementById('waiting-screen').style.display='none'; document.getElementById('overlay').style.display='flex'; };
-document.getElementById('btn-back-to-lobby').onclick=()=>{ showRoomLobby(); };
-document.getElementById('btn-start-again').onclick=()=>{
-  document.getElementById('btn-start-again').style.display='none';
-  document.getElementById('rl-waiting').style.display='block';
-  if (socket) socket.emit('rematch');
-};
-document.getElementById('btn-leave-room').onclick=()=>{
-  if (socket) { socket.emit('leaveRoom'); socket.disconnect(); }
-  window.location.href = '/rooms.html' + (myName ? ('?name=' + encodeURIComponent(myName)) : '');
+document.getElementById('btn-back-to-lobby').onclick=()=>{
+  if (socket) socket.disconnect();
+  window.location.href = backToLobbyURL();
 };
 // Track intended paddle position for sending to server. Runs every rAF so the
 // server gets input as fast as possible — unthrottled, deduplicated by position.
