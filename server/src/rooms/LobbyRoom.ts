@@ -173,7 +173,7 @@ export class LobbyRoom extends Room {
 
   private serializeList() {
     return Object.values(this.lobbyRooms)
-      .filter(r => !r.started)
+      .filter(r => !r.started && r.open)
       .map(r => ({
         id: r.code, name: r.name, open: r.open,
         players: Object.keys(r.players).length

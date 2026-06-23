@@ -263,16 +263,17 @@ function renderRoomList(rooms) {
   const empty=document.getElementById('rooms-empty');
   const heading=document.getElementById('list-heading');
   tbody.innerHTML='';
-  const open=rooms.filter(r=>r.open||true); // show all rooms
-  empty.style.display=open.length?'none':'block';
-  if(open.length===0) { heading.textContent='Start by creating a room:'; heading.className='empty'; }
-  else if(open.length===1) { heading.textContent='You can join 1 room!'; heading.className=''; }
-  else { heading.textContent='You can join '+open.length+' rooms!'; heading.className=''; }
-  open.forEach((r,i)=>{
+  // Server only ever sends public (open) rooms here — private rooms are
+  // discoverable by code only, never shown in this list.
+  empty.style.display=rooms.length?'none':'block';
+  if(rooms.length===0) { heading.textContent='Start by creating a room:'; heading.className='empty'; }
+  else if(rooms.length===1) { heading.textContent='You can join 1 room!'; heading.className=''; }
+  else { heading.textContent='You can join '+rooms.length+' rooms!'; heading.className=''; }
+  rooms.forEach((r,i)=>{
     const tr=document.createElement('tr');
     const full=r.players>=2;
     tr.innerHTML=`
-      <td class="room-name">${r.name}${!r.open?' 🔒':''}</td>
+      <td class="room-name">${r.name}</td>
       <td class="room-players">${r.players} player${r.players!==1?'s':''}</td>
       <td class="room-enter">
         ${full
