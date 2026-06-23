@@ -102,7 +102,6 @@ function resize() {
 const browserId = (() => { let id = localStorage.getItem('pong_bid'); if (!id) { id = Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10); localStorage.setItem('pong_bid',id); } return id; })();
 let socket, myRole, myName = '';
 let gameState = null;
-let myWins = 0, oppWins = 0;
 let gameRunning = false;
 let keys = {};
 const POWERUP_TYPES = {
@@ -163,6 +162,7 @@ function connect() {
   socket.on('countdown', ({ count }) => {
     if (count === 3) {
       localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null; lastBannerSeq = 0;
+      updateHUD(0, 0);
       document.getElementById('match-result').style.display = 'none';
     }
     cdMsg.textContent = count; cdMsg.style.opacity = '1';
@@ -172,6 +172,9 @@ function connect() {
     gameState = s; gameRunning = true;
     if (s.p1.score !== lastP1Score) { scoredWho = 'p1'; lastP1Score = s.p1.score; }
     if (s.p2.score !== lastP2Score) { scoredWho = 'p2'; lastP2Score = s.p2.score; }
+    const myScore  = myRole === 'p1' ? s.p1.score : s.p2.score;
+    const oppScore = myRole === 'p1' ? s.p2.score : s.p1.score;
+    updateHUD(myScore, oppScore);
     if (s.bannerSeq && s.bannerSeq !== lastBannerSeq) {
       lastBannerSeq = s.bannerSeq;
       showPowerupBanner(s.bannerText, s.bannerColor);
@@ -180,9 +183,6 @@ function connect() {
   socket.on('matchEnd', (data) => {
     gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
-    myWins    = myRole==='p1' ? data.p1Wins    : data.p2Wins;
-    oppWins   = myRole==='p1' ? data.p2Wins    : data.p1Wins;
-    updateHUD(myWins, oppWins);
     showMatchResult(iWon, data);
   });
   socket.on('opponentLeft', () => {
