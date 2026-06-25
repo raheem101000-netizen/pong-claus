@@ -21,6 +21,9 @@ export const server = defineServer({
         // equivalent (ccu = concurrent connected users, roomCount across
         // all room types).
         app.get("/status", (req, res) => {
+            // Public, read-only status check polled cross-origin from the
+            // admin dashboard — no sensitive data, so a wildcard is fine.
+            res.set("Access-Control-Allow-Origin", "*");
             res.json({
                 game: "Pong",
                 activePlayers: matchMaker.stats.local.ccu,
