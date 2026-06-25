@@ -16,18 +16,22 @@ export const server = defineServer({
             res.send("It's time to kick ass and chew bubblegum!");
         });
 
-        // Colyseus has no global "app"+"io"+"rooms" the way a plain
-        // socket.io server does — matchMaker.stats is the built-in
-        // equivalent (ccu = concurrent connected users, roomCount across
-        // all room types).
-        app.get("/status", (req, res) => {
+        // matchMaker.stats counts ALL room instances, including the
+        // persistent lobby_room (which deliberately never disposes — see
+        // LobbyRoom.autoDispose=false — so it survives while both players
+        // are off playing a match). That made activeRooms/activePlayers
+        // stick at >=1 forever, even with nobody actually in a game.
+        // Scope to game_room instances specifically so the count reflects
+        // real matches in progress and returns to 0 when nobody's playing.
+        app.get("/status", async (req, res) => {
             // Public, read-only status check polled cross-origin from the
             // admin dashboard — no sensitive data, so a wildcard is fine.
             res.set("Access-Control-Allow-Origin", "*");
+            const gameRooms = await matchMaker.query({ name: "game_room" });
             res.json({
                 game: "Pong",
-                activePlayers: matchMaker.stats.local.ccu,
-                activeRooms: matchMaker.stats.local.roomCount,
+                activePlayers: gameRooms.reduce((sum, r) => sum + r.clients, 0),
+                activeRooms: gameRooms.length,
                 timestamp: new Date().toISOString()
             });
         });
