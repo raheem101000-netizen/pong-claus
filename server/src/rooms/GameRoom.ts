@@ -495,11 +495,25 @@ export class GameRoom extends Room {
     });
     this.gs = null;
 
-    // Notify winner to claim instant payout
-    const winnerSlot = this.gameJoined[winner === 'p1' ? 0 : 1];
-    const winnerClient = this.clients.find(c => c.sessionId === winnerSlot?.sessionId);
-    if (winnerClient) {
-      winnerClient.send('payout', { amount_cents: 50, prize_display: '$0.50' });
+    // Create Stripe Connect onboarding link and notify winner
+    if (process.env.BASE_URL) {
+      try {
+        const winnerSlot = this.gameJoined[winner === 'p1' ? 0 : 1];
+        const winnerClient = this.clients.find(c => c.sessionId === winnerSlot?.sessionId);
+        if (winnerClient) {
+          const resp = await fetch(`${process.env.BASE_URL}/create-payout`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prize_amount_cents: 50 }),
+          });
+          const data = await resp.json() as { onboarding_url?: string; account_id?: string };
+          if (data.onboarding_url) {
+            winnerClient.send('payout', { onboarding_url: data.onboarding_url, account_id: data.account_id });
+          }
+        }
+      } catch (err) {
+        console.error('Payout error:', err);
+      }
     }
   }
 }
