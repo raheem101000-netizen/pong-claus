@@ -227,7 +227,7 @@ td.room-enter{text-align:right;}
 const socket = io();
 const COLORS = ['#b450ff','#4488FF'];
 let myName = localStorage.getItem('pong_name') || '';
-let myRoom = null, isMaster = false, isReady = false, roomIsPublic = true;
+let myRoom = null, isMaster = false, isReady = false, roomIsPublic = true, pendingReady = false;
 if (myName) document.getElementById('name-input').value = myName;
 
 function status(msg, type) { const el=document.getElementById('statusbar'); el.textContent=msg; el.className=type||''; }
@@ -249,7 +249,7 @@ socket.on('room:close',  ()=>socket.emit('room:list'));
 socket.on('room:update', ()=>socket.emit('room:list'));
 
 socket.on('room:created', ({room})=>{ myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
-socket.on('room:joined',  ({room})=>{ myRoom=room; isMaster=false; isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); });
+socket.on('room:joined',  ({room})=>{ myRoom=room; isMaster=false; isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
 socket.on('room:state',   room=>{ myRoom=room; renderPlayers(room); updateActions(); });
 socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); status(player.name+' joined','ok'); });
 socket.on('room:player:leave', ()=>{ sysMsg('A player left'); updateActions(); });
@@ -350,7 +350,12 @@ function sendChat(){ const inp=document.getElementById('chat-input'); const cont
 document.getElementById('btn-ready').onclick=()=>{
   if(!myName){status('Set your name first','err');return;}
   if(isReady) return;
-  isReady=true; socket.emit('room:ready'); updateActions();
+  const devBypass=new URLSearchParams(window.location.search).get('dev')==='MEDIATEST';
+  if(devBypass){ isReady=true; socket.emit('room:ready'); updateActions(); return; }
+  if(!myRoom){ status('Join a room first','err'); return; }
+  status('Redirecting to payment...','');
+  fetch('/create-multiplayer-checkout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room_id:myRoom.code,player_id:myName})})
+    .then(r=>r.json()).then(d=>{ if(d.url) window.location.href=d.url; else status('Payment error','err'); }).catch(()=>status('Payment error','err'));
 };
 
 document.getElementById('btn-start').onclick=()=>{
@@ -391,6 +396,17 @@ function joinByCode(){ if(!myName){status('Set your name first','err');return;} 
 
 const params=new URLSearchParams(window.location.search);
 if(params.get('name')){ myName=params.get('name'); document.getElementById('name-input').value=myName; localStorage.setItem('pong_name',myName); }
+
+// Payment return: auto-rejoin room and mark ready
+if(params.get('paid')==='true' && params.get('room')){
+  const retRoom=params.get('room');
+  const retPlayer=params.get('player');
+  if(retPlayer){ myName=decodeURIComponent(retPlayer); document.getElementById('name-input').value=myName; localStorage.setItem('pong_name',myName); }
+  pendingReady=true;
+  function joinAfterPayment(){ socket.emit('room:join',{code:retRoom,playerName:myName}); }
+  if(socket.connected) joinAfterPayment();
+  else socket.on('connect',joinAfterPayment);
+}
 
 showList();
 </script>

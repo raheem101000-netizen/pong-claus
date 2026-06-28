@@ -504,11 +504,11 @@ export class GameRoom extends Room {
           const resp = await fetch(`${process.env.BASE_URL}/create-payout`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prize_amount_cents: 800, game: 'Pong', mode: 'multiplayer' }),
+            body: JSON.stringify({ prize_amount_cents: 800 }),
           });
-          const data = await resp.json() as { onboarding_url?: string };
+          const data = await resp.json() as { onboarding_url?: string; account_id?: string };
           if (data.onboarding_url) {
-            winnerClient.send('payout', { onboarding_url: data.onboarding_url });
+            winnerClient.send('payout', { onboarding_url: data.onboarding_url, account_id: data.account_id });
           }
         }
       } catch (err) {

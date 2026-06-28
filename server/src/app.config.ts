@@ -59,17 +59,18 @@ export const server = defineServer({
             } catch (err: any) { res.status(500).json({ error: err.message }); }
         });
 
-        // Multiplayer checkout — $4.99
+        // Multiplayer checkout — $4.99 (room_id + player_id passed through for post-payment return)
         app.post("/create-multiplayer-checkout", express.json(), async (req, res) => {
             if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
+            const { room_id, player_id } = req.body;
             try {
                 const session = await stripe.checkout.sessions.create({
                     payment_method_types: ["card"],
                     line_items: [{ price_data: { currency: "usd", product_data: { name: "Pong Multiplayer" }, unit_amount: 499 }, quantity: 1 }],
                     mode: "payment",
-                    metadata: { mode: "multiplayer" },
-                    success_url: `${process.env.BASE_URL}/?paid=true&session_id={CHECKOUT_SESSION_ID}`,
-                    cancel_url: `${process.env.BASE_URL}/`,
+                    metadata: { mode: "multiplayer", room_id, player_id },
+                    success_url: `${process.env.BASE_URL}/rooms?paid=true&room=${room_id}&player=${encodeURIComponent(player_id)}&session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${process.env.BASE_URL}/rooms`,
                 });
                 res.json({ url: session.url });
             } catch (err: any) { res.status(500).json({ error: err.message }); }
@@ -79,7 +80,7 @@ export const server = defineServer({
         app.post("/create-payout", express.json(), async (req, res) => {
             if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
             try {
-                const { prize_amount_cents, game, mode } = req.body;
+                const { prize_amount_cents } = req.body;
 
                 const account = await stripe.accounts.create({
                     type: "express",
@@ -89,7 +90,7 @@ export const server = defineServer({
                 const accountLink = await stripe.accountLinks.create({
                     account: account.id,
                     refresh_url: "https://mediaskills.vercel.app/reauth",
-                    return_url: `https://mediaskills.vercel.app/payout-success?account=${account.id}&amount=${prize_amount_cents}&game=${game}&mode=${mode}`,
+                    return_url: `https://mediaskills.vercel.app/payout-success?account=${account.id}&amount=${prize_amount_cents}`,
                     type: "account_onboarding",
                 });
 
