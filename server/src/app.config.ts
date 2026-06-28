@@ -75,6 +75,48 @@ export const server = defineServer({
             } catch (err: any) { res.status(500).json({ error: err.message }); }
         });
 
+        // Create Stripe Express account + onboarding link for winner payout
+        app.post("/create-payout", express.json(), async (req, res) => {
+            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
+            try {
+                const { prize_amount_cents, game, mode } = req.body;
+
+                const account = await stripe.accounts.create({
+                    type: "express",
+                    capabilities: { transfers: { requested: true } },
+                });
+
+                const accountLink = await stripe.accountLinks.create({
+                    account: account.id,
+                    refresh_url: "https://mediaskills.vercel.app/reauth",
+                    return_url: `https://mediaskills.vercel.app/payout-success?account=${account.id}&amount=${prize_amount_cents}&game=${game}&mode=${mode}`,
+                    type: "account_onboarding",
+                });
+
+                res.json({ onboarding_url: accountLink.url, account_id: account.id });
+            } catch (err: any) {
+                res.status(500).json({ error: err.message });
+            }
+        });
+
+        // Transfer prize to winner's connected account after onboarding
+        app.post("/complete-payout", express.json(), async (req, res) => {
+            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
+            try {
+                const { account_id, prize_amount_cents } = req.body;
+
+                const transfer = await stripe.transfers.create({
+                    amount: prize_amount_cents,
+                    currency: "usd",
+                    destination: account_id,
+                });
+
+                res.json({ success: true, transfer_id: transfer.id });
+            } catch (err: any) {
+                res.status(500).json({ error: err.message });
+            }
+        });
+
         app.get("/hello_world", (req, res) => {
             res.send("It's time to kick ass and chew bubblegum!");
         });
