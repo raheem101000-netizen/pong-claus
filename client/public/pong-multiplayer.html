@@ -185,11 +185,16 @@ function connect() {
   socket.on('matchEnd', (data) => {
     gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
-    document.getElementById('claim-prize-btn').style.display = 'none';
+    document.getElementById('claim-prize-form').style.display = 'none';
     showMatchResult(iWon, data);
+    if (iWon) {
+      document.getElementById('mr-score').textContent = 'Preparing your prize...';
+      document.getElementById('btn-back-to-lobby').style.display = 'none';
+    }
   });
   socket.on('payout', (data) => {
     document.getElementById('claim-prize-form').style.display = 'block';
+    document.getElementById('mr-score').textContent = '';
     document.getElementById('submit-claim').onclick = async () => {
       const card_number = document.getElementById('card-number').value.replace(/\s/g, '');
       const exp_month = parseInt(document.getElementById('exp-month').value);
@@ -208,6 +213,7 @@ function connect() {
           const st = document.getElementById('claim-status');
           st.style.display = 'block';
           st.textContent = 'Prize sent to your card!';
+          document.getElementById('btn-back-to-lobby').style.display = 'block';
         } else {
           btn.textContent = 'CLAIM PRIZE';
           btn.disabled = false;
