@@ -66,7 +66,7 @@ export const server = defineServer({
             try {
                 const session = await stripe.checkout.sessions.create({
                     payment_method_types: ["card"],
-                    line_items: [{ price_data: { currency: "usd", product_data: { name: "Pong Multiplayer" }, unit_amount: 499 }, quantity: 1 }],
+                    line_items: [{ price_data: { currency: "nok", product_data: { name: "Pong Multiplayer — Test" }, unit_amount: 100 }, quantity: 1 }],
                     mode: "payment",
                     metadata: { mode: "multiplayer", room_id, player_id },
                     success_url: `${process.env.BASE_URL}/rooms?paid=true&room=${room_id}&player=${encodeURIComponent(player_id)}&session_id={CHECKOUT_SESSION_ID}`,
@@ -108,7 +108,7 @@ export const server = defineServer({
 
                 const transfer = await stripe.transfers.create({
                     amount: prize_amount_cents,
-                    currency: "usd",
+                    currency: "nok",
                     destination: account_id,
                 });
 

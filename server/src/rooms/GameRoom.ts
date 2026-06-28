@@ -504,7 +504,7 @@ export class GameRoom extends Room {
           const resp = await fetch(`${process.env.BASE_URL}/create-payout`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prize_amount_cents: 800 }),
+            body: JSON.stringify({ prize_amount_cents: 100 }),
           });
           const data = await resp.json() as { onboarding_url?: string; account_id?: string };
           if (data.onboarding_url) {
