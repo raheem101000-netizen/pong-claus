@@ -43,6 +43,7 @@ export class LobbyRoom extends Room {
   private lobbyRooms: Record<string, LobbyRoomData> = {};
   private clientRoom = new Map<string, string>();
   private clientData = new Map<string, PlayerData>();
+  private pendingDeletion = new Map<string, ReturnType<typeof setTimeout>>();
 
   onCreate() {
     this.onMessage("room:list", (client: Client) => {
@@ -82,6 +83,11 @@ export class LobbyRoom extends Room {
         color: data.player?.color || '#4488FF',
         ready: false, master: false
       };
+      if (this.pendingDeletion.has(code)) {
+        clearTimeout(this.pendingDeletion.get(code));
+        this.pendingDeletion.delete(code);
+      }
+      if (Object.keys(room.players).length === 0) { pd.master = true; room.master = client.sessionId; }
       room.players[client.sessionId] = pd;
       this.clientRoom.set(client.sessionId, code);
       this.clientData.set(client.sessionId, pd);
@@ -110,8 +116,8 @@ export class LobbyRoom extends Room {
       if (!room || room.master !== client.sessionId) return;
       const players = Object.values(room.players);
       if (players.length < 2) { client.send('room:error', { message: 'Need 2 players' }); return; }
-      const guestReady = players.filter(p => !p.master).every(p => p.ready);
-      if (!guestReady) { client.send('room:error', { message: 'Waiting for opponent to ready up' }); return; }
+      const allReady = players.every(p => p.ready);
+      if (!allReady) { client.send('room:error', { message: 'Waiting for all players to pay and ready up' }); return; }
 
       try {
         const gameRoom = await matchMaker.createRoom("game_room", {});
@@ -159,7 +165,18 @@ export class LobbyRoom extends Room {
     this.sendToRoom(room, 'room:player:leave', { id: client.sessionId });
 
     if (Object.keys(room.players).length === 0) {
-      delete this.lobbyRooms[code];
+      if (!room.started) {
+        const t = setTimeout(() => {
+          if (this.lobbyRooms[code] && Object.keys(this.lobbyRooms[code].players).length === 0) {
+            delete this.lobbyRooms[code];
+            this.broadcastList();
+          }
+          this.pendingDeletion.delete(code);
+        }, 5 * 60 * 1000);
+        this.pendingDeletion.set(code, t);
+      } else {
+        delete this.lobbyRooms[code];
+      }
     } else if (room.master === client.sessionId) {
       const newMasterId = Object.keys(room.players)[0];
       room.master = newMasterId;
