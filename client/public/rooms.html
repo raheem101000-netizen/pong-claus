@@ -249,7 +249,7 @@ socket.on('room:close',  ()=>socket.emit('room:list'));
 socket.on('room:update', ()=>socket.emit('room:list'));
 
 socket.on('room:created', ({room})=>{ myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
-socket.on('room:joined',  ({room})=>{ myRoom=room; isMaster=false; isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
+socket.on('room:joined',  ({room,player})=>{ myRoom=room; isMaster=!!(player&&player.master); isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
 socket.on('room:state',   room=>{ myRoom=room; renderPlayers(room); updateActions(); });
 socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); status(player.name+' joined','ok'); });
 socket.on('room:player:leave', ()=>{ sysMsg('A player left'); updateActions(); });
