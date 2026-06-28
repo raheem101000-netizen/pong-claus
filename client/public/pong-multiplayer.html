@@ -77,6 +77,7 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
     <div id="match-result">
       <div id="mr-change">YOU WIN!</div>
       <div id="mr-score">10 — 7</div>
+      <button class="btn-gold" id="claim-prize-btn" style="display:none;margin-bottom:10px;font-size:15px;padding:14px 32px;">🏆 CLAIM YOUR $8 PRIZE</button>
       <button class="btn-green" id="btn-back-to-lobby">Back to Lobby</button>
     </div>
     <div id="role-label"></div>
@@ -184,7 +185,13 @@ function connect() {
   socket.on('matchEnd', (data) => {
     gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
+    document.getElementById('claim-prize-btn').style.display = 'none';
     showMatchResult(iWon, data);
+  });
+  socket.on('payout', (data) => {
+    const btn = document.getElementById('claim-prize-btn');
+    btn.style.display = 'block';
+    btn.onclick = () => { window.location.href = data.onboarding_url; };
   });
   socket.on('opponentLeft', () => {
     gameRunning = false;

@@ -483,7 +483,7 @@ export class GameRoom extends Room {
     }
   }
 
-  private endMatch(winner: string) {
+  private async endMatch(winner: string) {
     const s = this.gs!;
     const p1won = winner === 'p1';
     if (p1won) this.p1Wins++; else this.p2Wins++;
@@ -494,5 +494,26 @@ export class GameRoom extends Room {
       p1Wins: this.p1Wins, p2Wins: this.p2Wins
     });
     this.gs = null;
+
+    // Trigger winner payout via Stripe Connect
+    if (process.env.BASE_URL) {
+      try {
+        const winnerSlot = this.gameJoined[winner === 'p1' ? 0 : 1];
+        const winnerClient = this.clients.find(c => c.sessionId === winnerSlot?.sessionId);
+        if (winnerClient) {
+          const resp = await fetch(`${process.env.BASE_URL}/create-payout`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prize_amount_cents: 800, game: 'Pong', mode: 'multiplayer' }),
+          });
+          const data = await resp.json() as { onboarding_url?: string };
+          if (data.onboarding_url) {
+            winnerClient.send('payout', { onboarding_url: data.onboarding_url });
+          }
+        }
+      } catch (err) {
+        console.error('Payout error:', err);
+      }
+    }
   }
 }
