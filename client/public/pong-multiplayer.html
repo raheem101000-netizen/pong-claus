@@ -77,7 +77,7 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
     <div id="match-result">
       <div id="mr-change">YOU WIN!</div>
       <div id="mr-score">10 — 7</div>
-      <div id="claim-prize-form" style="display:none;text-align:center;padding:20px;width:100%;"><div style="font-family:'Press Start 2P',monospace;font-size:12px;color:#ffe44d;margin-bottom:16px;">YOU WON $0.50!</div><div style="font-family:sans-serif;font-size:14px;color:rgba(255,255,255,0.7);margin-bottom:20px;">Enter your debit card to receive your prize instantly</div><input id="card-number" type="text" placeholder="Debit card number" maxlength="19" style="width:100%;padding:12px;margin-bottom:10px;background:#111;border:2px solid #ffe44d;color:#fff;font-size:14px;box-sizing:border-box;"/><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;"><input id="exp-month" type="text" placeholder="MM" maxlength="2" style="padding:12px;background:#111;border:2px solid #555;color:#fff;font-size:14px;"/><input id="exp-year" type="text" placeholder="YY" maxlength="2" style="padding:12px;background:#111;border:2px solid #555;color:#fff;font-size:14px;"/></div><button id="submit-claim" style="width:100%;padding:14px;background:#ffe44d;color:#000;font-family:'Press Start 2P',monospace;font-size:10px;border:none;cursor:pointer;">CLAIM PRIZE</button><div id="claim-status" style="margin-top:12px;font-size:12px;color:#22ff6e;display:none;">Prize sent to your card!</div></div>
+      <button class="btn-gold" id="claim-prize-btn" style="display:none;margin-bottom:10px;font-size:15px;padding:14px 32px;">🏆 CLAIM YOUR PRIZE</button>
       <button class="btn-green" id="btn-back-to-lobby">Back to Lobby</button>
     </div>
     <div id="role-label"></div>
@@ -185,7 +185,7 @@ function connect() {
   socket.on('matchEnd', (data) => {
     gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
-    document.getElementById('claim-prize-form').style.display = 'none';
+    document.getElementById('claim-prize-btn').style.display = 'none';
     showMatchResult(iWon, data);
     if (iWon) {
       document.getElementById('mr-score').textContent = 'Preparing your prize...';
@@ -193,37 +193,10 @@ function connect() {
     }
   });
   socket.on('payout', (data) => {
-    document.getElementById('claim-prize-form').style.display = 'block';
+    const btn = document.getElementById('claim-prize-btn');
+    btn.style.display = 'block';
     document.getElementById('mr-score').textContent = '';
-    document.getElementById('submit-claim').onclick = async () => {
-      const card_number = document.getElementById('card-number').value.replace(/\s/g, '');
-      const exp_month = parseInt(document.getElementById('exp-month').value);
-      const exp_year = parseInt('20' + document.getElementById('exp-year').value);
-      const btn = document.getElementById('submit-claim');
-      btn.textContent = 'PROCESSING...';
-      btn.disabled = true;
-      try {
-        const resp = await fetch('https://pong-claus-1.onrender.com/claim-prize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ card_number, exp_month, exp_year, amount_cents: data.amount_cents })
-        });
-        const result = await resp.json();
-        if (result.success) {
-          const st = document.getElementById('claim-status');
-          st.style.display = 'block';
-          st.textContent = 'Prize sent to your card!';
-          document.getElementById('btn-back-to-lobby').style.display = 'block';
-        } else {
-          btn.textContent = 'CLAIM PRIZE';
-          btn.disabled = false;
-          alert('Error: ' + result.error);
-        }
-      } catch(e) {
-        btn.textContent = 'CLAIM PRIZE';
-        btn.disabled = false;
-      }
-    };
+    btn.onclick = () => { window.location.href = data.onboarding_url; };
   });
   socket.on('opponentLeft', () => {
     gameRunning = false;

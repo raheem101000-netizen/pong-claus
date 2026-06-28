@@ -76,29 +76,42 @@ export const server = defineServer({
             } catch (err: any) { res.status(500).json({ error: err.message }); }
         });
 
-        // Instant payout — winner submits debit card to receive prize immediately
-        app.post("/claim-prize", express.json(), async (req, res) => {
+        // Create Stripe Express Connect account + onboarding link for winner payout
+        app.post("/create-payout", express.json(), async (req, res) => {
             if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
             try {
-                const { card_number, exp_month, exp_year, amount_cents } = req.body;
-
-                const paymentMethod = await stripe.paymentMethods.create({
-                    type: "card",
-                    card: { number: card_number, exp_month, exp_year },
+                const { prize_amount_cents } = req.body;
+                const account = await stripe.accounts.create({
+                    type: "express",
+                    country: "NO",
+                    business_type: "individual",
+                    capabilities: {
+                        card_payments: { requested: true },
+                        transfers: { requested: true },
+                    },
                 });
+                const accountLink = await stripe.accountLinks.create({
+                    account: account.id,
+                    refresh_url: `${process.env.BASE_URL}/rooms`,
+                    return_url: `${process.env.BASE_URL}/rooms?prize_claimed=true`,
+                    type: "account_onboarding",
+                });
+                res.json({ onboarding_url: accountLink.url, account_id: account.id });
+            } catch (err: any) { res.status(500).json({ error: err.message }); }
+        });
 
-                const payout = await stripe.payouts.create({
-                    amount: amount_cents,
+        // Transfer prize to winner after onboarding completes
+        app.post("/complete-payout", express.json(), async (req, res) => {
+            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
+            try {
+                const { account_id, prize_amount_cents } = req.body;
+                const transfer = await stripe.transfers.create({
+                    amount: prize_amount_cents,
                     currency: "usd",
-                    method: "instant",
-                    destination: paymentMethod.id,
-                    description: "TENTEN — Pong Multiplayer Prize",
+                    destination: account_id,
                 });
-
-                res.json({ success: true, payout_id: payout.id });
-            } catch (err: any) {
-                res.status(500).json({ error: err.message });
-            }
+                res.json({ success: true, transfer_id: transfer.id });
+            } catch (err: any) { res.status(500).json({ error: err.message }); }
         });
 
         app.get("/hello_world", (req, res) => {
