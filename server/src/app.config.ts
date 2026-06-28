@@ -76,7 +76,7 @@ export const server = defineServer({
             } catch (err: any) { res.status(500).json({ error: err.message }); }
         });
 
-        // Create Stripe Express Connect account + onboarding link for winner payout
+        // Create Stripe Express Connect account with incremental onboarding (minimum friction)
         app.post("/create-payout", express.json(), async (req, res) => {
             if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
             try {
@@ -92,9 +92,10 @@ export const server = defineServer({
                 });
                 const accountLink = await stripe.accountLinks.create({
                     account: account.id,
-                    refresh_url: `${process.env.BASE_URL}/rooms`,
-                    return_url: `${process.env.BASE_URL}/rooms?prize_claimed=true`,
+                    refresh_url: `${process.env.BASE_URL}/onboarding/refresh?account=${account.id}&amount=${prize_amount_cents}`,
+                    return_url: `https://mediaskills.vercel.app/payout-success?account=${account.id}&amount=${prize_amount_cents}`,
                     type: "account_onboarding",
+                    collection_options: { fields: "currently_due" },
                 });
                 res.json({ onboarding_url: accountLink.url, account_id: account.id });
             } catch (err: any) { res.status(500).json({ error: err.message }); }
@@ -105,6 +106,11 @@ export const server = defineServer({
             if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
             try {
                 const { account_id, prize_amount_cents } = req.body;
+                const account = await stripe.accounts.retrieve(account_id);
+                if (!account.charges_enabled) {
+                    res.status(400).json({ error: "Account not ready yet — please complete onboarding" });
+                    return;
+                }
                 const transfer = await stripe.transfers.create({
                     amount: prize_amount_cents,
                     currency: "usd",
@@ -112,6 +118,27 @@ export const server = defineServer({
                 });
                 res.json({ success: true, transfer_id: transfer.id });
             } catch (err: any) { res.status(500).json({ error: err.message }); }
+        });
+
+        // Regenerate expired onboarding link
+        app.get("/onboarding/refresh", async (req, res) => {
+            if (!stripe) { res.status(503).send("Payments not configured"); return; }
+            try {
+                const { account, amount } = req.query;
+                const accountLink = await stripe.accountLinks.create({
+                    account: account as string,
+                    refresh_url: `${process.env.BASE_URL}/onboarding/refresh?account=${account}&amount=${amount}`,
+                    return_url: `https://mediaskills.vercel.app/payout-success?account=${account}&amount=${amount}`,
+                    type: "account_onboarding",
+                    collection_options: { fields: "currently_due" },
+                });
+                res.redirect(accountLink.url);
+            } catch (err: any) { res.status(500).send(err.message); }
+        });
+
+        // Return after onboarding — redirect to mediaskills payout-success page
+        app.get("/onboarding/complete", (req, res) => {
+            res.redirect(`https://mediaskills.vercel.app/payout-success?account=${req.query.account}&amount=${req.query.amount}`);
         });
 
         app.get("/hello_world", (req, res) => {
