@@ -76,69 +76,53 @@ export const server = defineServer({
             } catch (err: any) { res.status(500).json({ error: err.message }); }
         });
 
-        // Create Stripe Express Connect account with incremental onboarding (minimum friction)
-        app.post("/create-payout", express.json(), async (req, res) => {
-            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
+        // Winner submits name + PayPal email; admin pays within 48h
+        app.post("/submit-prize-claim", express.json(), async (req, res) => {
+            const { winner_name, paypal_email, notes, game, prize_amount } = req.body;
+            if (neonPool) {
+                await neonPool.query(
+                    "INSERT INTO prize_claims (winner_name, paypal_email, notes, game, prize_amount, claimed_at) VALUES ($1, $2, $3, $4, $5, NOW())",
+                    [winner_name, paypal_email, notes || "", game, prize_amount]
+                ).catch(console.error);
+            }
+            res.json({ success: true });
+        });
+
+        // CORS preflight for admin endpoints (called cross-origin from mediaskills)
+        app.options("/admin/prize-claims", (_req, res) => {
+            res.set("Access-Control-Allow-Origin", "*");
+            res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+            res.set("Access-Control-Allow-Headers", "Content-Type");
+            res.sendStatus(204);
+        });
+        app.options("/admin/mark-paid", (_req, res) => {
+            res.set("Access-Control-Allow-Origin", "*");
+            res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+            res.set("Access-Control-Allow-Headers", "Content-Type");
+            res.sendStatus(204);
+        });
+
+        // Admin: list all unpaid prize claims
+        app.get("/admin/prize-claims", async (req, res) => {
+            res.set("Access-Control-Allow-Origin", "*");
+            if (req.query.key !== "TENTEN2025") { res.status(401).json({ error: "Unauthorized" }); return; }
+            if (!neonPool) { res.json([]); return; }
             try {
-                const { prize_amount_cents } = req.body;
-                const account = await stripe.accounts.create({
-                    type: "express",
-                    country: "NO",
-                    business_type: "individual",
-                    capabilities: {
-                        card_payments: { requested: true },
-                        transfers: { requested: true },
-                    },
-                });
-                const accountLink = await stripe.accountLinks.create({
-                    account: account.id,
-                    refresh_url: `${process.env.BASE_URL}/onboarding/refresh?account=${account.id}&amount=${prize_amount_cents}`,
-                    return_url: `https://mediaskills.vercel.app/payout-success?account=${account.id}&amount=${prize_amount_cents}`,
-                    type: "account_onboarding",
-                    collection_options: { fields: "currently_due" },
-                });
-                res.json({ onboarding_url: accountLink.url, account_id: account.id });
+                const result = await neonPool.query("SELECT * FROM prize_claims WHERE paid = false ORDER BY claimed_at DESC");
+                res.json(result.rows);
             } catch (err: any) { res.status(500).json({ error: err.message }); }
         });
 
-        // Transfer prize to winner after onboarding completes
-        app.post("/complete-payout", express.json(), async (req, res) => {
-            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
+        // Admin: mark a prize claim as paid
+        app.post("/admin/mark-paid", express.json(), async (req, res) => {
+            res.set("Access-Control-Allow-Origin", "*");
+            if (req.query.key !== "TENTEN2025") { res.status(401).json({ error: "Unauthorized" }); return; }
+            if (!neonPool) { res.json({ success: false }); return; }
             try {
-                const { account_id, prize_amount_cents } = req.body;
-                const account = await stripe.accounts.retrieve(account_id);
-                if (!account.charges_enabled) {
-                    res.status(400).json({ error: "Account not ready yet — please complete onboarding" });
-                    return;
-                }
-                const transfer = await stripe.transfers.create({
-                    amount: prize_amount_cents,
-                    currency: "usd",
-                    destination: account_id,
-                });
-                res.json({ success: true, transfer_id: transfer.id });
+                const { id } = req.body;
+                await neonPool.query("UPDATE prize_claims SET paid = true WHERE id = $1", [id]);
+                res.json({ success: true });
             } catch (err: any) { res.status(500).json({ error: err.message }); }
-        });
-
-        // Regenerate expired onboarding link
-        app.get("/onboarding/refresh", async (req, res) => {
-            if (!stripe) { res.status(503).send("Payments not configured"); return; }
-            try {
-                const { account, amount } = req.query;
-                const accountLink = await stripe.accountLinks.create({
-                    account: account as string,
-                    refresh_url: `${process.env.BASE_URL}/onboarding/refresh?account=${account}&amount=${amount}`,
-                    return_url: `https://mediaskills.vercel.app/payout-success?account=${account}&amount=${amount}`,
-                    type: "account_onboarding",
-                    collection_options: { fields: "currently_due" },
-                });
-                res.redirect(accountLink.url);
-            } catch (err: any) { res.status(500).send(err.message); }
-        });
-
-        // Return after onboarding — redirect to mediaskills payout-success page
-        app.get("/onboarding/complete", (req, res) => {
-            res.redirect(`https://mediaskills.vercel.app/payout-success?account=${req.query.account}&amount=${req.query.amount}`);
         });
 
         app.get("/hello_world", (req, res) => {
@@ -179,7 +163,22 @@ export const server = defineServer({
         });
     },
 
-    beforeListen: () => {}
+    beforeListen: async () => {
+        if (neonPool) {
+            await neonPool.query(`
+                CREATE TABLE IF NOT EXISTS prize_claims (
+                    id SERIAL PRIMARY KEY,
+                    winner_name TEXT NOT NULL,
+                    paypal_email TEXT NOT NULL,
+                    notes TEXT,
+                    game TEXT NOT NULL,
+                    prize_amount TEXT NOT NULL,
+                    paid BOOLEAN DEFAULT FALSE,
+                    claimed_at TIMESTAMP DEFAULT NOW()
+                )
+            `).catch(console.error);
+        }
+    }
 });
 
 export default server;

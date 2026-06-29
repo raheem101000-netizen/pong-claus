@@ -77,7 +77,17 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
     <div id="match-result">
       <div id="mr-change">YOU WIN!</div>
       <div id="mr-score">10 — 7</div>
-      <button class="btn-gold" id="claim-prize-btn" style="display:none;margin-bottom:10px;font-size:15px;padding:14px 32px;">🏆 CLAIM YOUR PRIZE</button>
+      <div id='winner-claim-form' style='display:none;text-align:center;padding:24px;max-width:420px;margin:0 auto;'>
+        <div style='font-family:"Press Start 2P",monospace;font-size:13px;color:#ffe44d;margin-bottom:8px;'>🏆 YOU WON!</div>
+        <div style='font-family:"Press Start 2P",monospace;font-size:28px;color:#ffe44d;margin-bottom:16px;'>$8 PRIZE</div>
+        <div style='font-family:Outfit,sans-serif;font-size:14px;color:rgba(255,255,255,0.7);line-height:1.6;margin-bottom:24px;'>Enter your details below. Your prize will be sent to your PayPal within 48 hours.</div>
+        <input id='winner-name' type='text' placeholder='Full name' style='width:100%;padding:12px;margin-bottom:10px;background:#111;border:2px solid #ffe44d;color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;'/>
+        <input id='winner-paypal' type='email' placeholder='PayPal email' style='width:100%;padding:12px;margin-bottom:10px;background:#111;border:2px solid #ffe44d;color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;'/>
+        <textarea id='winner-notes' placeholder='No PayPal? Any questions? Let us know here (optional)' style='width:100%;padding:12px;margin-bottom:16px;background:#111;border:2px solid rgba(255,255,255,0.15);color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;height:80px;resize:none;'></textarea>
+        <button id='submit-claim-btn' style='width:100%;padding:14px;background:#ffe44d;color:#000;font-family:"Press Start 2P",monospace;font-size:9px;border:none;cursor:pointer;letter-spacing:1px;'>► CLAIM MY PRIZE</button>
+        <div id='claim-success' style='display:none;margin-top:16px;font-family:Outfit,sans-serif;font-size:14px;color:#22ff6e;line-height:1.6;'>✓ Claim received! Your prize will be sent to your PayPal within 48 hours. Check your PayPal email.</div>
+        <div id='claim-error' style='display:none;margin-top:12px;font-family:Outfit,sans-serif;font-size:13px;color:#ff4757;'></div>
+      </div>
       <button class="btn-green" id="btn-back-to-lobby">Back to Lobby</button>
     </div>
     <div id="role-label"></div>
@@ -185,7 +195,7 @@ function connect() {
   socket.on('matchEnd', (data) => {
     gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
-    document.getElementById('claim-prize-btn').style.display = 'none';
+    document.getElementById('winner-claim-form').style.display = 'none';
     showMatchResult(iWon, data);
     if (iWon) {
       document.getElementById('mr-score').textContent = 'Preparing your prize...';
@@ -193,10 +203,46 @@ function connect() {
     }
   });
   socket.on('payout', (data) => {
-    const btn = document.getElementById('claim-prize-btn');
-    btn.style.display = 'block';
+    document.getElementById('winner-claim-form').style.display = 'block';
     document.getElementById('mr-score').textContent = '';
-    btn.onclick = () => { window.location.href = data.onboarding_url; };
+    document.getElementById('submit-claim-btn').onclick = async () => {
+      const winner_name = document.getElementById('winner-name').value.trim();
+      const paypal_email = document.getElementById('winner-paypal').value.trim();
+      const notes = document.getElementById('winner-notes').value.trim();
+      if (!winner_name) {
+        document.getElementById('claim-error').style.display = 'block';
+        document.getElementById('claim-error').textContent = 'Please enter your full name';
+        return;
+      }
+      if (!paypal_email && !notes) {
+        document.getElementById('claim-error').style.display = 'block';
+        document.getElementById('claim-error').textContent = 'Please enter your PayPal email or leave a note';
+        return;
+      }
+      const btn = document.getElementById('submit-claim-btn');
+      btn.textContent = 'SUBMITTING...';
+      btn.disabled = true;
+      try {
+        const resp = await fetch('https://pong-claus-1.onrender.com/submit-prize-claim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ winner_name, paypal_email, notes, game: data.game, prize_amount: data.prize_amount })
+        });
+        const result = await resp.json();
+        if (result.success) {
+          document.getElementById('claim-success').style.display = 'block';
+          document.getElementById('submit-claim-btn').style.display = 'none';
+          document.getElementById('claim-error').style.display = 'none';
+        } else {
+          throw new Error('Failed');
+        }
+      } catch(e) {
+        btn.textContent = '► CLAIM MY PRIZE';
+        btn.disabled = false;
+        document.getElementById('claim-error').style.display = 'block';
+        document.getElementById('claim-error').textContent = 'Something went wrong. Please try again.';
+      }
+    };
   });
   socket.on('opponentLeft', () => {
     gameRunning = false;
