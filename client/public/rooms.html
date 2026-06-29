@@ -355,6 +355,7 @@ document.getElementById('btn-ready').onclick=()=>{
   if(devBypass){ isReady=true; socket.emit('room:ready'); updateActions(); return; }
   if(!myRoom){ status('Join a room first','err'); return; }
   status('Redirecting to payment...','');
+  socket.emit('room:paying');
   localStorage.setItem('pending_room',myRoom.code);
   localStorage.setItem('pending_player',myName);
   fetch('/create-multiplayer-checkout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room_id:myRoom.code,player_id:myName})})
