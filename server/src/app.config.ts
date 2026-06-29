@@ -78,11 +78,11 @@ export const server = defineServer({
 
         // Winner submits name + PayPal email; admin pays within 48h
         app.post("/submit-prize-claim", express.json(), async (req, res) => {
-            const { winner_name, paypal_email, notes, game, prize_amount } = req.body;
+            const { winner_name, paypal_email, contact_email, notes, game, prize_amount } = req.body;
             if (neonPool) {
                 await neonPool.query(
-                    "INSERT INTO prize_claims (winner_name, paypal_email, notes, game, prize_amount, claimed_at) VALUES ($1, $2, $3, $4, $5, NOW())",
-                    [winner_name, paypal_email, notes || "", game, prize_amount]
+                    "INSERT INTO prize_claims (winner_name, paypal_email, contact_email, notes, game, prize_amount, claimed_at) VALUES ($1, $2, $3, $4, $5, $6, NOW())",
+                    [winner_name, paypal_email, contact_email || "", notes || "", game, prize_amount]
                 ).catch(console.error);
             }
             res.json({ success: true });
@@ -177,6 +177,9 @@ export const server = defineServer({
                     claimed_at TIMESTAMP DEFAULT NOW()
                 )
             `).catch(console.error);
+            await neonPool.query(
+                "ALTER TABLE prize_claims ADD COLUMN IF NOT EXISTS contact_email TEXT"
+            ).catch(console.error);
         }
     }
 });

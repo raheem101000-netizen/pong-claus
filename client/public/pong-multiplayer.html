@@ -83,6 +83,7 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
         <div style='font-family:Outfit,sans-serif;font-size:14px;color:rgba(255,255,255,0.7);line-height:1.6;margin-bottom:24px;'>Enter your details below. Your prize will be sent to your PayPal within 48 hours.</div>
         <input id='winner-name' type='text' placeholder='Full name' style='width:100%;padding:12px;margin-bottom:10px;background:#111;border:2px solid #ffe44d;color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;'/>
         <input id='winner-paypal' type='email' placeholder='PayPal email' style='width:100%;padding:12px;margin-bottom:10px;background:#111;border:2px solid #ffe44d;color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;'/>
+        <input id='winner-contact-email' type='email' placeholder='Your contact email' style='width:100%;padding:12px;margin-bottom:10px;background:#111;border:2px solid #ffe44d;color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;'/>
         <textarea id='winner-notes' placeholder='No PayPal? Any questions? Let us know here (optional)' style='width:100%;padding:12px;margin-bottom:16px;background:#111;border:2px solid rgba(255,255,255,0.15);color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;height:80px;resize:none;'></textarea>
         <button id='submit-claim-btn' style='width:100%;padding:14px;background:#ffe44d;color:#000;font-family:"Press Start 2P",monospace;font-size:9px;border:none;cursor:pointer;letter-spacing:1px;'>► CLAIM MY PRIZE</button>
         <div id='claim-success' style='display:none;margin-top:16px;font-family:Outfit,sans-serif;font-size:14px;color:#22ff6e;line-height:1.6;'>✓ Claim received! Your prize will be sent to your PayPal within 48 hours. Check your PayPal email.</div>
@@ -208,6 +209,7 @@ function connect() {
     document.getElementById('submit-claim-btn').onclick = async () => {
       const winner_name = document.getElementById('winner-name').value.trim();
       const paypal_email = document.getElementById('winner-paypal').value.trim();
+      const contact_email = document.getElementById('winner-contact-email').value.trim();
       const notes = document.getElementById('winner-notes').value.trim();
       if (!winner_name) {
         document.getElementById('claim-error').style.display = 'block';
@@ -226,7 +228,7 @@ function connect() {
         const resp = await fetch('https://pong-claus-1.onrender.com/submit-prize-claim', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ winner_name, paypal_email, notes, game: data.game, prize_amount: data.prize_amount })
+          body: JSON.stringify({ winner_name, paypal_email, contact_email, notes, game: data.game, prize_amount: data.prize_amount })
         });
         const result = await resp.json();
         if (result.success) {
