@@ -113,6 +113,7 @@ function resize() {
 }
 const browserId = (() => { let id = localStorage.getItem('pong_bid'); if (!id) { id = Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10); localStorage.setItem('pong_bid',id); } return id; })();
 let socket, myRole, myName = '', oppName = '';
+let currentRoomCode = null;
 let gameState = null;
 let gameRunning = false;
 let keys = {};
@@ -151,17 +152,23 @@ function connect() {
     socket.emit('latency', { ms: halfRtt });
   });
   socket.on('disconnect', (reason) => console.log('[CLIENT] disconnected:', reason));
-  socket.io.on('reconnect', (n) => console.log('[CLIENT] reconnected after', n, 'attempts'));
+  socket.io.on('reconnect', (n) => {
+    console.log('[CLIENT] reconnected after', n, 'attempts');
+    const rc = currentRoomCode;
+    if (rc) socket.emit('joinRoom', { code: rc, name: myName, bid: browserId });
+  });
   socket.on('connect_error', () => showError('Cannot connect to server'));
   socket.on('roomCreated', ({ code, role }) => {
     myRole = role;
+    currentRoomCode = code;
     document.getElementById('overlay').style.display = 'none';
     document.getElementById('waiting-screen').style.display = 'flex';
     document.getElementById('room-code-display').textContent = code;
     document.getElementById('role-label').textContent = 'YOU ARE PLAYER 1 — BOTTOM PADDLE';
   });
-  socket.on('roomJoined', ({ role, myName: serverName, paddlePos }) => {
+  socket.on('roomJoined', ({ code, role, myName: serverName, paddlePos }) => {
     myRole = role;
+    if (code) currentRoomCode = code;
     if (serverName) myName = serverName;
     document.getElementById('overlay').style.display = 'none';
     document.getElementById('waiting-screen').style.display = 'none';
@@ -469,7 +476,8 @@ if (roomFromURL && nameFromURL) {
   });
   // Re-join on EVERY reconnect so the server rebinds our new socket id via bid.
   socket.io.on('reconnect', () => {
-    if (roomFromURL) socket.emit('joinRoom', { code: roomFromURL, name: myName, bid: browserId });
+    const rc = currentRoomCode || roomFromURL;
+    if (rc) socket.emit('joinRoom', { code: rc, name: myName, bid: browserId });
   });
 }
 </script>
