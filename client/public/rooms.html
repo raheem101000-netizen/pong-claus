@@ -224,6 +224,12 @@ td.room-enter{text-align:right;}
 
 <script src="/colyseus-adapter.js"></script>
 <script>
+// TEMPORARY FREE-PLAY MODE — bypasses the $0.50 Stripe gate for multiplayer.
+// Set to false (or delete this line) to restore normal payment. Nothing else needs to
+// change: /create-multiplayer-checkout and the Stripe webhook in app.config.ts are
+// untouched and still fully work — they're just unreached while this is true.
+const FREE_PLAY = true;
+
 const socket = io();
 const COLORS = ['#b450ff','#4488FF'];
 let myName = localStorage.getItem('pong_name') || '';
@@ -338,7 +344,7 @@ function updateActions() {
   btnStart.style.display=(isMaster && isReady)?'inline-block':'none';
   btnStart.disabled=!(hasGuest && guestReady);
   if(isReady){ btnReady.textContent='✓ Paid!'; btnReady.classList.add('is-ready'); }
-  else { btnReady.textContent='PAY & READY ($0.50)'; btnReady.classList.remove('is-ready'); }
+  else { btnReady.textContent=FREE_PLAY?'READY (FREE)':'PAY & READY ($0.50)'; btnReady.classList.remove('is-ready'); }
 }
 
 function addMsg(player,content){ const box=document.getElementById('chat-msgs'); const d=document.createElement('div'); d.className='chat-line'; d.innerHTML=`<span class="chat-author">${player}:</span> ${content}`; box.appendChild(d); box.scrollTop=box.scrollHeight; }
@@ -351,7 +357,9 @@ function sendChat(){ const inp=document.getElementById('chat-input'); const cont
 document.getElementById('btn-ready').onclick=()=>{
   if(!myName){status('Set your name first','err');return;}
   if(isReady) return;
-  const devBypass=new URLSearchParams(window.location.search).get('dev')==='MEDIATEST';
+  // dev=MEDIATEST is a pre-existing secret bypass, left as-is (harmless, redundant while
+  // FREE_PLAY is on) — remove it separately when payment is restored.
+  const devBypass=FREE_PLAY || new URLSearchParams(window.location.search).get('dev')==='MEDIATEST';
   if(devBypass){ isReady=true; socket.emit('room:ready'); updateActions(); return; }
   if(!myRoom){ status('Join a room first','err'); return; }
   status('Redirecting to payment...','');
