@@ -11,7 +11,8 @@ html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font
 #game-shell { position: relative; width: 100%; max-width: 420px; }
 #hud { display: flex; align-items: center; justify-content: center; padding: 10px 14px; background: rgba(0,0,0,0.95); border-radius: 8px 8px 0 0; overflow: hidden; }
 #hud-wins  { font-size: 18px; font-weight: 700; color: #fff; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #000; }
+#canvas-wrap { border-radius: 0 0 8px 8px; overflow: hidden; }
+canvas { display: block; width: 100%; background: #000; transform: translateZ(0); }
 #overlay, #match-result, #waiting-screen {
   position: absolute; inset: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -50,7 +51,7 @@ canvas { display: block; width: 100%; border-radius: 0 0 8px 8px; background: #0
     <div id="hud">
       <div id="hud-wins">0 — 0</div>
     </div>
-    <canvas id="canvas"></canvas>
+    <div id="canvas-wrap"><canvas id="canvas"></canvas></div>
     <div id="powerup-banner"></div>
     <div id="cd-msg"></div>
     <div id="overlay">
