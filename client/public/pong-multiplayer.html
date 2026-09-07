@@ -12,7 +12,7 @@ html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font
 #hud { display: flex; align-items: center; justify-content: center; padding: 10px 14px; background: rgba(0,0,0,0.95); border-radius: 8px 8px 0 0; overflow: hidden; }
 #hud-wins  { font-size: 18px; font-weight: 700; color: #fff; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #canvas-wrap { border-radius: 0 0 8px 8px; overflow: hidden; }
-canvas { display: block; width: 100%; background: #000; transform: translateZ(0); }
+canvas { display: block; background: #000; transform: translateZ(0); }
 #overlay, #match-result, #waiting-screen {
   position: absolute; inset: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -107,7 +107,14 @@ const PADDLE_SHORT_S = Math.round(S_H * 0.018);  // 12, server-unit paddle heigh
 function resize() {
   W = Math.min(window.innerWidth, 420);
   H = Math.min(window.innerHeight - 80, 660);
-  canvas.width = W; canvas.height = H;
+  // Render at native device resolution (not upscaled) — backing store is
+  // W*dpr x H*dpr device pixels, CSS box stays W x H so layout is unaffected.
+  // All draw calls below keep using W/H logical coordinates; the transform
+  // maps them onto the higher-res buffer.
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   PADDLE_LONG  = Math.round(W * 0.28);
   PADDLE_SHORT = Math.round(H * 0.018);
   BALL_R = Math.round(Math.min(W,H) * 0.018);
@@ -135,6 +142,7 @@ let localPaddleX = null; // input intent only — NOT used for drawing
 let lastSentX    = null;
 // Smoothly interpolated draw state — lerps toward server truth each frame
 let drawn = { p1x: null, p2x: null, bx: null, by: null };
+let lastFrameTs = null; // for delta-time-normalized smoothing in draw()
 // Point-scored tracking (client-side, derived from score changes)
 let lastP1Score = 0, lastP2Score = 0, scoredWho = null;
 function connect() {
@@ -272,7 +280,7 @@ function updateHUD(myScore, oppScore) {
   const right = oppName || 'Opponent';
   document.getElementById('hud-wins').textContent = `${left}  ${myScore} — ${oppScore}  ${right}`;
 }
-function draw() {
+function draw(ts) {
   ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
   if (!gameState) { requestAnimationFrame(draw); return; }
   const s = gameState;
@@ -280,13 +288,21 @@ function draw() {
   ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke(); ctx.setLineDash([]);
   // Initialise drawn state on first frame of a new match.
   if (drawn.p1x === null) { drawn.p1x = s.p1.x; drawn.p2x = s.p2.x; drawn.bx = s.ball.x; drawn.by = s.ball.y; }
-  // Lerp all drawn positions toward server truth each frame — smooth without lying.
+  // Lerp all drawn positions toward server truth every frame — smooth without lying.
+  // L=0.65 was tuned assuming ~60fps (16.667ms) frames; converting it to an
+  // exponential-decay rate and reapplying per elapsed ms keeps the SAME
+  // convergence speed in wall-clock time regardless of the display's actual
+  // refresh rate (60Hz, 90Hz, 120Hz, or a janky/variable one).
+  const now = ts || performance.now();
+  const dt = lastFrameTs != null ? (now - lastFrameTs) : (1000 / 60);
+  lastFrameTs = now;
   const L = 0.65;
-  drawn.p1x += (s.p1.x - drawn.p1x) * L;
-  drawn.p2x += (s.p2.x - drawn.p2x) * L;
+  const alpha = 1 - Math.pow(1 - L, dt / (1000 / 60));
+  drawn.p1x += (s.p1.x - drawn.p1x) * alpha;
+  drawn.p2x += (s.p2.x - drawn.p2x) * alpha;
   const ballJump = Math.hypot(s.ball.x - drawn.bx, s.ball.y - drawn.by);
   if (ballJump > 100) { drawn.bx = s.ball.x; drawn.by = s.ball.y; }
-  else { drawn.bx += (s.ball.x - drawn.bx) * L; drawn.by += (s.ball.y - drawn.by) * L; }
+  else { drawn.bx += (s.ball.x - drawn.bx) * alpha; drawn.by += (s.ball.y - drawn.by) * alpha; }
 
   const flip = myRole === 'p2';
   const flipY   = (sy) => flip ? (S_H - sy - PADDLE_SHORT_S) : sy;
