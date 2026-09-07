@@ -172,7 +172,7 @@ export class GameRoom extends Room {
       if (!this.gs) return;
       const winner = this.tickBall();
       this.broadcastCounter++;
-      if (this.broadcastCounter % 3 === 0 || winner || this.gs.delay > 0) {
+      if (this.broadcastCounter % 2 === 0 || winner || this.gs.delay > 0) {
         this.broadcast('state', {
           ball: this.gs.ball, p1: this.gs.p1, p2: this.gs.p2, delay: this.gs.delay,
           powerup: this.gs.powerup,
