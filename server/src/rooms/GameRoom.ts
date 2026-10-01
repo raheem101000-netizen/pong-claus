@@ -1,7 +1,11 @@
 import { Room, Client } from "@colyseus/core";
+import { authenticateGameToken, PongAuth } from "../auth";
+import { consumeLaunchTicket } from "../launchTickets";
+import { creditPongWin } from "../payouts";
 
 const TICK_RATE     = 60;
-const POINTS_TO_WIN = 10;
+// First to 10 wins. PONG_POINTS_TO_WIN overrides it for local tests only (never set in production).
+const POINTS_TO_WIN = Number(process.env.PONG_POINTS_TO_WIN) || 10;
 const W = 400, H = 660;
 const BALL_R       = Math.round(Math.min(W, H) * 0.018);
 const PADDLE_LONG  = Math.round(W * 0.28);
@@ -19,7 +23,7 @@ const POWERUP_TYPES: Record<string, { emoji: string; color: string; duration: nu
 const POWERUP_KEYS = Object.keys(POWERUP_TYPES);
 const OBSTACLE_INTERVAL = 480;
 
-interface PlayerSlot { sessionId: string; bid: string | null; name: string; }
+interface PlayerSlot { sessionId: string; bid: string | null; name: string; userId: number; }
 interface BallState  { x: number; y: number; vx: number; vy: number; lastHitter: 'p1' | 'p2' | null; }
 interface PaddleState { x: number; y: number; score: number; }
 interface PowerupState { type: string; x: number; y: number; r: number; life: number; pulse: number; }
@@ -71,13 +75,35 @@ export class GameRoom extends Room {
   private p2LatencyMs = 0;
   private p1History: PaddleXSample[] = [];
   private p2History: PaddleXSample[] = [];
+  // The two lobby accounts allowed in this match, and whether its result has
+  // been credited (a game_room hosts exactly one match).
+  private allowedUserIds: number[] = [];
+  private matchSettled = false;
 
-  onCreate() {
+  static async onAuth(token: string, options: any) {
+    return authenticateGameToken(token, options?.playerId);
+  }
+
+  onCreate(options: any) {
+    // Only the lobby may start a match room (launchTickets.ts), for exactly
+    // the two accounts that were in the lobby room.
+    if (!consumeLaunchTicket(options?.launchTicket)) {
+      throw new Error("Matches can only be started from a lobby");
+    }
+    const ids = Array.isArray(options?.allowedUserIds) ? options.allowedUserIds : [];
+    if (ids.length !== 2 || new Set(ids).size !== 2 || !ids.every((n: unknown) => Number.isInteger(n))) {
+      throw new Error("A match needs exactly two different players");
+    }
+    this.allowedUserIds = ids;
+
     this.onMessage("joinRoom", (client: Client, data: { code?: string; name?: string; bid?: string }) => {
-      const name = data.name || 'Player';
+      // Identity comes from the login token (onAuth), never from the client.
+      const auth = client.auth as PongAuth;
+      const name = auth.displayName || 'Player';
       const bid = data.bid || null;
 
-      const prior = bid ? this.gameJoined.find(p => p.bid === bid) : null;
+      // Reconnect / second tab: the same account takes its existing slot back.
+      const prior = this.gameJoined.find(p => p.userId === auth.userId) || null;
       if (prior) {
         console.log('REBIND:', name, 'bid=' + bid, prior.sessionId, '->', client.sessionId);
         prior.sessionId = client.sessionId;
@@ -92,7 +118,7 @@ export class GameRoom extends Room {
       if (this.gameJoined.find(p => p.sessionId === client.sessionId)) return;
       if (this.gameJoined.length >= 2) return;
 
-      this.gameJoined.push({ sessionId: client.sessionId, bid, name });
+      this.gameJoined.push({ sessionId: client.sessionId, bid, name, userId: auth.userId });
       const myIndex = this.gameJoined.length - 1;
       const role = myIndex === 0 ? 'p1' : 'p2';
 
@@ -138,7 +164,11 @@ export class GameRoom extends Room {
 
   }
 
-  onJoin(_client: Client) {}
+  onJoin(_client: Client, _options: any, auth: PongAuth) {
+    if (!this.allowedUserIds.includes(auth.userId)) {
+      throw new Error("You're not a player in this match");
+    }
+  }
 
   onLeave(client: Client) {
     const sessionId = client.sessionId;
@@ -147,7 +177,20 @@ export class GameRoom extends Room {
       const slot = this.gameJoined.find(p => p.sessionId === sessionId);
       if (!slot) { console.log('LEAVE grace: ' + sessionId + ' rebound — continuing'); return; }
       console.log('LEAVE grace expired — ending game');
+      const wasPlaying = !!this.gs; // a match was in progress (not countdown, not already finished)
       if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
+
+      // Walkover (same as FIFA / Puz Royale / Kurver): the player who left
+      // didn't come back within the grace, so the opponent who is still here
+      // wins — through the same endMatch → creditWinner path and the same
+      // 'pongmp:<roomId>' key, so a normal finish and a walkover can't both pay.
+      const other = this.gameJoined.find(p => p !== slot);
+      const otherStillHere = !!other && this.clients.some(c => c.sessionId === other.sessionId);
+      if (wasPlaying && otherStillHere && !this.matchSettled) {
+        console.log('WALKOVER: ' + slot.name + ' left — ' + other!.name + ' wins');
+        this.endMatch(this.gameJoined.indexOf(other!) === 0 ? 'p1' : 'p2', true);
+        return;
+      }
       this.broadcast('opponentLeft');
     }, 15000);
   }
@@ -483,7 +526,7 @@ export class GameRoom extends Room {
     }
   }
 
-  private endMatch(winner: string) {
+  private endMatch(winner: string, walkover = false) {
     const s = this.gs!;
     const p1won = winner === 'p1';
     if (p1won) this.p1Wins++; else this.p2Wins++;
@@ -491,15 +534,38 @@ export class GameRoom extends Room {
       winner,
       p1Score: s.p1.score,
       p2Score: s.p2.score,
-      p1Wins: this.p1Wins, p2Wins: this.p2Wins
+      p1Wins: this.p1Wins, p2Wins: this.p2Wins,
+      walkover,
     });
     this.gs = null;
 
-    // Notify winner to submit their prize claim
-    const winnerSlot = this.gameJoined[winner === 'p1' ? 0 : 1];
-    const winnerClient = this.clients.find(c => c.sessionId === winnerSlot?.sessionId);
-    if (winnerClient) {
-      winnerClient.send('payout', { prize_amount: '$8', game: 'Pong Multiplayer' });
+    // Auto-credit replaces the old "$8 — claim by PayPal" flow: the winner's
+    // tenten.run account gets the server-set prize, once.
+    if (this.matchSettled) return;
+    this.matchSettled = true;
+    const winnerSlot = this.gameJoined[p1won ? 0 : 1];
+    const loserSlot = this.gameJoined[p1won ? 1 : 0];
+    if (winnerSlot) void this.creditWinner(winnerSlot, loserSlot || null);
+  }
+
+  private async creditWinner(winner: PlayerSlot, loser: PlayerSlot | null) {
+    let state: { status: string; amount?: string } = { status: 'failed' };
+    for (const delay of [0, 1000, 3000]) {
+      if (delay) await new Promise(r => setTimeout(r, delay));
+      try {
+        const out = await creditPongWin({ roomId: this.roomId, winnerUserId: winner.userId, loserUserId: loser ? loser.userId : null });
+        console.log(`[pongmp-credit] match ${this.roomId} → user ${winner.userId}: ${out.status}` +
+          (out.status === 'credited' ? ` $${out.amount} (${out.balanceBefore} → ${out.balanceAfter})` : '') +
+          (out.status === 'disabled' ? ' — payouts are OFF (PONGMP_PAYOUTS_ENABLED=false)' : ''));
+        state = out.status === 'disabled' ? { status: 'disabled' } : { status: 'credited', amount: '5.00' };
+        break;
+      } catch (e) {
+        console.error(`[pongmp-credit] attempt failed for match ${this.roomId} → user ${winner.userId}:`, e);
+      }
     }
+    if (state.status === 'failed') console.error(`[pongmp-credit] GAVE UP — match ${this.roomId}, winner user ${winner.userId} is owed $5.00`);
+    // winner.sessionId tracks the current session even across a reconnect.
+    const winnerClient = this.clients.find(c => c.sessionId === winner.sessionId);
+    winnerClient?.send('pongmp:credit', state);
   }
 }

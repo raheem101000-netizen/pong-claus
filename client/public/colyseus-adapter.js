@@ -105,10 +105,21 @@
       fire('connect');
     }
 
+    // tenten.run login (stored by the lobby from the handoff): the server's
+    // onAuth turns this token into the player's real account.
+    function authedClient() {
+      var client = new Colyseus.Client(serverURL);
+      try {
+        var a = JSON.parse(sessionStorage.getItem('pongmp_auth'));
+        if (a && a.token) { client.auth.token = a.token; return { client: client, opts: { playerId: a.playerId } }; }
+      } catch (e) {}
+      return { client: client, opts: {} };
+    }
+
     function reconnect() {
       if (!_roomId) return;
-      var client = new Colyseus.Client(serverURL);
-      client.joinById(_roomId)
+      var c = authedClient();
+      c.client.joinById(_roomId, c.opts)
         .then(function (room) {
           _attempts++;
           attach(room);
@@ -118,14 +129,16 @@
     }
 
     whenReady(function () {
-      var client = new Colyseus.Client(serverURL);
+      var c = authedClient(), client = c.client;
       var promise;
       if (isGame) {
+        // Matches are only ever started from the lobby (the server refuses a
+        // client-created game_room).
         promise = roomCodeFromURL
-          ? client.joinById(roomCodeFromURL)
-          : client.create('game_room');
+          ? client.joinById(roomCodeFromURL, c.opts)
+          : Promise.reject(new Error('Matches can only be started from the lobby'));
       } else {
-        promise = client.joinOrCreate('lobby_room');
+        promise = client.joinOrCreate('lobby_room', c.opts);
       }
       promise.then(attach).catch(function (e) { fire('connect_error', e); });
     });

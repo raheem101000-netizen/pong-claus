@@ -57,7 +57,6 @@ canvas { display: block; background: #000; transform: translateZ(0); }
     <div id="overlay">
       <div id="lobby-title">PONG</div>
       <div id="lobby-sub">MULTIPLAYER · FIRST TO 10</div>
-      <input id="name-input" type="text" maxlength="12" placeholder="Your name" autocomplete="off" />
       <div class="menu-row">
         <button class="btn-green" id="btn-create">Create Room</button>
       </div>
@@ -78,18 +77,7 @@ canvas { display: block; background: #000; transform: translateZ(0); }
     <div id="match-result">
       <div id="mr-change">YOU WIN!</div>
       <div id="mr-score">10 — 7</div>
-      <div id='winner-claim-form' style='display:none;text-align:center;padding:24px;max-width:420px;margin:0 auto;'>
-        <div style='font-family:"Press Start 2P",monospace;font-size:13px;color:#ffe44d;margin-bottom:8px;'>🏆 YOU WON!</div>
-        <div style='font-family:"Press Start 2P",monospace;font-size:28px;color:#ffe44d;margin-bottom:16px;'>$8 PRIZE</div>
-        <div style='font-family:Outfit,sans-serif;font-size:14px;color:rgba(255,255,255,0.7);line-height:1.6;margin-bottom:24px;'>Enter your details below. Your prize will be sent to your PayPal within 48 hours.</div>
-        <input id='winner-name' type='text' placeholder='Full name' style='width:100%;padding:12px;margin-bottom:10px;background:#111;border:2px solid #ffe44d;color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;'/>
-        <input id='winner-paypal' type='email' placeholder='PayPal email' style='width:100%;padding:12px;margin-bottom:10px;background:#111;border:2px solid #ffe44d;color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;'/>
-        <input id='winner-contact-email' type='email' placeholder='Your contact email' style='width:100%;padding:12px;margin-bottom:10px;background:#111;border:2px solid #ffe44d;color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;'/>
-        <textarea id='winner-notes' placeholder='No PayPal? Any questions? Let us know here (optional)' style='width:100%;padding:12px;margin-bottom:16px;background:#111;border:2px solid rgba(255,255,255,0.15);color:#fff;font-family:Outfit,sans-serif;font-size:14px;box-sizing:border-box;height:80px;resize:none;'></textarea>
-        <button id='submit-claim-btn' style='width:100%;padding:14px;background:#ffe44d;color:#000;font-family:"Press Start 2P",monospace;font-size:9px;border:none;cursor:pointer;letter-spacing:1px;'>► CLAIM MY PRIZE</button>
-        <div id='claim-success' style='display:none;margin-top:16px;font-family:Outfit,sans-serif;font-size:14px;color:#22ff6e;line-height:1.6;'>✓ Claim received! Your prize will be sent to your PayPal within 48 hours. Check your PayPal email.</div>
-        <div id='claim-error' style='display:none;margin-top:12px;font-family:Outfit,sans-serif;font-size:13px;color:#ff4757;'></div>
-      </div>
+      <div id="mr-credit" style="display:none;font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:700;color:#4CFF6C;margin:4px 0 18px;text-align:center;"></div>
       <button class="btn-green" id="btn-back-to-lobby">Back to Lobby</button>
     </div>
     <div id="role-label"></div>
@@ -212,55 +200,22 @@ function connect() {
   socket.on('matchEnd', (data) => {
     gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
-    document.getElementById('winner-claim-form').style.display = 'none';
+    document.getElementById('mr-credit').style.display = 'none';
     showMatchResult(iWon, data);
+    if (data.walkover) document.getElementById('mr-score').textContent = iWon ? 'Your opponent left the match' : 'You left the match';
     if (iWon) {
-      document.getElementById('mr-score').textContent = 'Preparing your prize...';
-      document.getElementById('btn-back-to-lobby').style.display = 'none';
+      document.getElementById('mr-credit').textContent = 'Adding your prize…';
+      document.getElementById('mr-credit').style.display = 'block';
     }
   });
-  socket.on('payout', (data) => {
-    document.getElementById('winner-claim-form').style.display = 'block';
-    document.getElementById('mr-score').textContent = '';
-    document.getElementById('submit-claim-btn').onclick = async () => {
-      const winner_name = document.getElementById('winner-name').value.trim();
-      const paypal_email = document.getElementById('winner-paypal').value.trim();
-      const contact_email = document.getElementById('winner-contact-email').value.trim();
-      const notes = document.getElementById('winner-notes').value.trim();
-      if (!winner_name) {
-        document.getElementById('claim-error').style.display = 'block';
-        document.getElementById('claim-error').textContent = 'Please enter your full name';
-        return;
-      }
-      if (!paypal_email && !notes) {
-        document.getElementById('claim-error').style.display = 'block';
-        document.getElementById('claim-error').textContent = 'Please enter your PayPal email or leave a note';
-        return;
-      }
-      const btn = document.getElementById('submit-claim-btn');
-      btn.textContent = 'SUBMITTING...';
-      btn.disabled = true;
-      try {
-        const resp = await fetch('https://pong-claus-1.onrender.com/submit-prize-claim', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ winner_name, paypal_email, contact_email, notes, game: data.game, prize_amount: data.prize_amount })
-        });
-        const result = await resp.json();
-        if (result.success) {
-          document.getElementById('claim-success').style.display = 'block';
-          document.getElementById('submit-claim-btn').style.display = 'none';
-          document.getElementById('claim-error').style.display = 'none';
-        } else {
-          throw new Error('Failed');
-        }
-      } catch(e) {
-        btn.textContent = '► CLAIM MY PRIZE';
-        btn.disabled = false;
-        document.getElementById('claim-error').style.display = 'block';
-        document.getElementById('claim-error').textContent = 'Something went wrong. Please try again.';
-      }
-    };
+  // Auto-credit (replaces the old "$8 — claim by PayPal" form): the server
+  // credits the winner's tenten.run balance and tells the winner.
+  socket.on('pongmp:credit', (c) => {
+    const el = document.getElementById('mr-credit');
+    if (c && c.status === 'credited') { el.textContent = 'You won! $' + c.amount + ' added to your balance'; el.style.color = '#4CFF6C'; }
+    else if (c && c.status === 'disabled') { el.textContent = "Cash prizes aren't live yet — no balance was credited for this win."; el.style.color = 'rgba(255,255,255,0.6)'; }
+    else { el.textContent = "Your prize couldn't be added automatically — it's been logged and will be credited."; el.style.color = '#FFB400'; }
+    el.style.display = 'block';
   });
   socket.on('opponentLeft', () => {
     gameRunning = false;
@@ -483,9 +438,12 @@ resize(); updateHUD(0,0); draw();
 // Auto-join from rooms lobby
 const urlParams = new URLSearchParams(window.location.search);
 const roomFromURL = urlParams.get('room');
-const nameFromURL = urlParams.get('name');
-if (roomFromURL && nameFromURL) {
-  myName = nameFromURL;
+let pongAuth = null;
+try { pongAuth = JSON.parse(sessionStorage.getItem('pongmp_auth')) || null; } catch (_) {}
+// Matches start from the lobby, logged in: no login or no room → lobby (login gate there).
+if (!pongAuth || !roomFromURL) location.replace('/rooms.html');
+if (roomFromURL && pongAuth) {
+  myName = pongAuth.name || 'Player';
   document.getElementById('overlay').style.display = 'none';
   connect();
   socket.on('connect', () => {
