@@ -43,6 +43,8 @@ canvas { display: block; background: #000; transform: translateZ(0); }
 #cd-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #fff; font-size: 64px; font-weight: 300; pointer-events: none; opacity: 0; z-index: 9; font-family: monospace; transition: opacity 0.15s; }
 #error-msg { font-size: 11px; color: #FF4444; letter-spacing: 1px; margin-top: 6px; min-height: 16px; }
 #role-label { position: absolute; bottom: 10px; left: 0; right: 0; text-align: center; font-size: 10px; color: #222; letter-spacing: 2px; pointer-events: none; }
+.tenten-back-btn{display:inline-block;margin-top:10px;font-family:'Space Grotesk',sans-serif;font-size:13px;letter-spacing:1px;color:rgba(255,255,255,0.6);text-decoration:none;border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px 18px;}
+.tenten-back-btn:hover{color:#fff;border-color:rgba(255,255,255,0.5);}
 </style>
 </head>
 <body>
@@ -73,12 +75,14 @@ canvas { display: block; background: #000; transform: translateZ(0); }
       <div class="spinner"></div>
       <div style="font-size:11px;color:rgba(255,255,255,0.3);letter-spacing:1px;">Waiting for opponent to join...</div>
       <button class="btn" style="margin-top:20px;" id="btn-cancel">Cancel</button>
+      <a id="tenten-back-wait" class="tenten-back-btn" href="https://tenten.run/">← TENTEN</a>
     </div>
     <div id="match-result">
       <div id="mr-change">YOU WIN!</div>
       <div id="mr-score">10 — 7</div>
       <div id="mr-credit" style="display:none;font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:700;color:#4CFF6C;margin:4px 0 18px;text-align:center;"></div>
       <button class="btn-green" id="btn-back-to-lobby">Back to Lobby</button>
+      <a id="tenten-back-result" class="tenten-back-btn" href="https://tenten.run/">← TENTEN</a>
     </div>
     <div id="role-label"></div>
   </div>
