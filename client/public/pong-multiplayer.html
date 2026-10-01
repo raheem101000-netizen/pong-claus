@@ -142,6 +142,55 @@ let lastHalfRtt  = 0;     // from the ping/pong below
 function myEffect() { const e = gameState && gameState.activeEffects; return e ? (myRole === 'p1' ? e.p1 : e.p2) : null; }
 function myPaddleLenS() { const e = myEffect(); return e && e.type === 'shrink' ? S_PADDLE_LONG * 0.45 : S_PADDLE_LONG; }
 function myPaddleFrozen() { const e = myEffect(); return !!(e && e.type === 'frozen'); }
+// ── Hit judgement on your own screen ────────────────────────────────────────
+// Every paddle report tells the server which moment of the ball was ON SCREEN
+// (shownTick: where the drawn ball sits between server ticks, as a fraction —
+// it trails the newest update slightly because it's smoothed). The server
+// settles a ball reaching your line from where your paddle was in the moment
+// before the ball touched the line on your screen. This page keeps the same
+// reports and runs the same rule as soon as that moment has been shown, so you
+// see the true outcome at once — a return only if your paddle was really there.
+const S_BALL_R = Math.round(Math.min(S_W, S_H) * 0.018);   // 7, matches server
+const S_FORGIVE = Math.round(S_W * 0.05);                  // 20
+const S_SPEED_MAX = Math.min(S_W, S_H) * 0.040;            // 16
+let seenTick = 0, lastStateAt = 0, shownTick = 0;
+let ballHist = [];                 // recent { tick, x, y } from the server
+let myReports = [], myXBefore = null;
+let pendingJudge = null, ballOverride = null;
+function sendMyX() {
+  if (!socket || !socket.connected || localPaddleX === null) return;
+  const seen = Math.round(shownTick * 100) / 100;
+  socket.emit('paddleMove', { x: localPaddleX, seen });
+  lastSentX = localPaddleX;
+  myReports.push({ seen, x: localPaddleX });
+  if (myReports.length > 240) { myXBefore = myReports[myReports.length - 241].x; myReports.splice(0, myReports.length - 240); }
+}
+function coversX(px, len, x) { return x + S_BALL_R > px - S_FORGIVE && x - S_BALL_R < px + len + S_FORGIVE; }
+// Same rule as the server's settleJudgement.
+function myCall(j) {
+  let carried = myXBefore;
+  const during = [];
+  for (const r of myReports) { if (r.seen < j.c - 1) carried = r.x; else if (r.seen < j.c) during.push(r.x); }
+  if (carried === null) carried = myRole === 'p1' ? gameState.p1.x : gameState.p2.x;
+  const len = myPaddleLenS();
+  return [carried, ...during].find(x => coversX(x, len, j.x));
+}
+function settleMine() {
+  const j = pendingJudge;
+  if (!j || shownTick < j.c) return;
+  pendingJudge = null;
+  const viewX = myCall(j), hit = viewX !== undefined;
+  if (hit === j.prov) return;                        // server's provisional call already right
+  let vx = j.vx, vy = j.vy;
+  if (hit) {
+    const len = myPaddleLenS();
+    const rel = Math.max(-1, Math.min(1, (j.x - (viewX + len / 2)) / (len / 2)));
+    const spd = Math.min(Math.hypot(j.vx, j.vy) + 0.3, S_SPEED_MAX);
+    vx = Math.sin(rel * Math.PI / 4) * spd;
+    vy = Math.cos(rel * Math.PI / 4) * spd * (myRole === 'p1' ? -1 : 1);
+  }
+  ballOverride = { s: j.s, x: j.x, y: j.y, vx, vy, made: performance.now() };
+}
 // Smoothly interpolated draw state — lerps toward server truth each frame
 let drawn = { p1x: null, p2x: null, bx: null, by: null };
 let lastFrameTs = null; // for delta-time-normalized smoothing in draw()
@@ -202,6 +251,20 @@ function connect() {
   });
   socket.on('state', (s) => {
     gameState = s; gameRunning = true;
+    seenTick = s.tick || 0; lastStateAt = performance.now();
+    ballHist.push({ tick: seenTick, x: s.ball.x, y: s.ball.y });
+    if (ballHist.length > 40) ballHist.shift();
+    if (s.judge) { if (!pendingJudge || pendingJudge.s !== s.judge.s) { if (!ballOverride || ballOverride.s !== s.judge.s) pendingJudge = s.judge; } }
+    else { pendingJudge = null; ballOverride = null; }
+    // While the ball is coming at us (or a call on our line is open), report
+    // the paddle with the tick on screen even if it hasn't moved, so the
+    // server can settle the call without waiting.
+    const me = myRole === 'p1' ? s.p1 : s.p2;
+    if (me && s.delay === 0) {
+      const toward = myRole === 'p1' ? s.ball.vy > 0 : s.ball.vy < 0;
+      const dist = Math.abs(s.ball.y - me.y);
+      if (s.judge || (toward && dist < 140)) sendMyX();
+    }
     if (s.p1.score !== lastP1Score) { scoredWho = 'p1'; lastP1Score = s.p1.score; }
     if (s.p2.score !== lastP2Score) { scoredWho = 'p2'; lastP2Score = s.p2.score; }
     const myScore  = myRole === 'p1' ? s.p1.score : s.p2.score;
@@ -273,6 +336,30 @@ function draw(ts) {
   const ballJump = Math.hypot(s.ball.x - drawn.bx, s.ball.y - drawn.by);
   if (ballJump > 100) { drawn.bx = s.ball.x; drawn.by = s.ball.y; }
   else { drawn.bx += (s.ball.x - drawn.bx) * alpha; drawn.by += (s.ball.y - drawn.by) * alpha; }
+  // Which moment the drawn ball is showing: its position between two recent
+  // server ticks, as a fractional tick.
+  if (!ballOverride) {
+    let best = null, bestD = Infinity;
+    for (let i = ballHist.length - 2; i >= 0; i--) {
+      const a = ballHist[i], b2 = ballHist[i + 1];
+      const dx = b2.x - a.x, dy = b2.y - a.y, L2 = dx * dx + dy * dy;
+      const t = L2 > 0 ? Math.max(0, Math.min(1, ((drawn.bx - a.x) * dx + (drawn.by - a.y) * dy) / L2)) : 1;
+      const d = Math.hypot(a.x + dx * t - drawn.bx, a.y + dy * t - drawn.by);
+      if (d < bestD - 0.01) { bestD = d; best = a.tick + t * (b2.tick - a.tick); }
+    }
+    if (best !== null && best > shownTick) shownTick = best;
+  } else if (seenTick > shownTick) shownTick = seenTick;
+  settleMine();
+  // Our own call on a ball at our line differs from the server's provisional
+  // one: show our (correct) outcome until the server settles it the same way.
+  if (ballOverride && performance.now() - ballOverride.made < 600) {
+    const o = ballOverride;
+    const k = Math.min(30, (performance.now() - o.made) / (1000 / 60));
+    let bx = o.x + o.vx * k; const by = o.y + o.vy * k;
+    if (bx - S_BALL_R < 0) bx = 2 * S_BALL_R - bx;
+    if (bx + S_BALL_R > S_W) bx = 2 * (S_W - S_BALL_R) - bx;
+    drawn.bx = bx; drawn.by = by;
+  }
 
   const flip = myRole === 'p2';
   const flipY   = (sy) => flip ? (S_H - sy - PADDLE_SHORT_S) : sy;
@@ -405,10 +492,7 @@ function applyTouch(e) {
   const len = myPaddleLenS();
   localPaddleX = Math.max(0, Math.min(S_W - len, serverX - len / 2));
   lastInputAt = performance.now();
-  if (socket && socket.connected && gameRunning) {
-    socket.emit('paddleMove', { x: localPaddleX });
-    lastSentX = localPaddleX;
-  }
+  if (gameRunning) sendMyX();
 }
 canvas.addEventListener('touchstart', applyTouch, { passive: false });
 canvas.addEventListener('touchmove',  applyTouch, { passive: false });
@@ -443,10 +527,7 @@ function paddleLoop(ts) {
       if (right) { localPaddleX += pspd; lastInputAt = performance.now(); }
     }
     localPaddleX = Math.max(0, Math.min(S_W - myPaddleLenS(), localPaddleX));
-    if (socket && socket.connected && (lastSentX === null || Math.abs(localPaddleX - lastSentX) > 0.5)) {
-      socket.emit('paddleMove', { x: localPaddleX });
-      lastSentX = localPaddleX;
-    }
+    if (lastSentX === null || Math.abs(localPaddleX - lastSentX) > 0.5) sendMyX();
   }
   requestAnimationFrame(paddleLoop);
 }

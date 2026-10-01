@@ -13,8 +13,11 @@ const PADDLE_SHORT = Math.round(H * 0.018);
 const BALL_SPEED   = Math.min(W, H) * 0.022;
 const SPEED_MAX    = Math.min(W, H) * 0.040;
 const FORGIVE      = Math.round(W * 0.05);
-// Longest a missed crossing is held open waiting for the defender's input.
-const MISS_WINDOW_MAX_MS = 250;
+// Hit judgement (see "Lag compensation" below): longest a crossing waits for
+// the defender's paddle report, and how far behind the current tick a report
+// may say its screen was.
+const JUDGE_MAX_MS  = 400;
+const ACK_MAX_TICKS = 24;
 
 const POWERUP_TYPES: Record<string, { emoji: string; color: string; duration: number }> = {
   ice:    { emoji: '❄️',  color: '#00cfff', duration: 3000 },
@@ -41,10 +44,21 @@ interface GameState {
   obstacleTimer: number;
   bannerSeq: number; bannerText: string; bannerColor: string;
 }
-// A ball that crossed a paddle's line while the paddle wasn't there (yet).
-// Judged once that player's input from the moment they SAW the crossing has
-// had time to arrive (see tickBall).
-interface PendingMiss { x: number; t: number; until: number; }
+// A ball reaching a paddle's line. The server calls it at once from the
+// paddle position it has (prov), then confirms or corrects that call from the
+// defender's own reports of where their paddle was on their screen.
+interface Judgement {
+  s: number;                 // tick the ball reached the line
+  c: number;                 // exact moment of contact, in ticks (s-1 … s)
+  x: number; y: number;      // contact point (ball centre)
+  vx: number; vy: number;    // incoming velocity
+  prov: boolean;             // provisional call: true = returned
+  prevHitter: 'p1' | 'p2' | null;
+  t: number; until: number;  // ms: opened at / latest decision time
+}
+// A paddle position from a client, tagged with the server tick (fractional:
+// the drawn ball is between ticks) that client had on screen when it was there.
+interface PaddleSample { seen: number; x: number; }
 
 function randomPowerupSpawnTicks(): number {
   return Math.floor((5 + Math.random() * 6) * TICK_RATE);
@@ -75,11 +89,12 @@ export class GameRoom extends Room {
   private p1Wins = 0;
   private p2Wins = 0;
 
-  // Lag compensation: per-player one-way latency (from the client's pings) and
-  // any not-yet-judged miss per side.
-  private p1LatencyMs = 0;
-  private p2LatencyMs = 0;
-  private pendingMiss: { p1?: PendingMiss; p2?: PendingMiss } = {};
+  // Lag compensation (see "Lag compensation" below).
+  private tickNo = 0;
+  private samples: { p1: PaddleSample[]; p2: PaddleSample[] } = { p1: [], p2: [] };
+  private xBeforeSamples = { p1: 0, p2: 0 };   // paddle x before the oldest kept sample
+  private lastSeen = { p1: 0, p2: 0 };
+  private judge: { p1?: Judgement; p2?: Judgement } = {};
   // The two lobby accounts allowed in this match, and whether its result has
   // been credited (a game_room hosts exactly one match).
   private allowedUserIds: number[] = [];
@@ -142,16 +157,24 @@ export class GameRoom extends Room {
       }
     });
 
-    this.onMessage("paddleMove", (client: Client, data: { x: number }) => {
+    this.onMessage("paddleMove", (client: Client, data: { x: number; seen?: number }) => {
       if (!this.gs) return;
       const idx = this.gameJoined.findIndex(p => p.sessionId === client.sessionId);
       if (idx === -1) { console.log('[paddleMove] DROP idx=-1 session=' + client.sessionId); return; }
       const key: 'p1' | 'p2' = idx === 0 ? 'p1' : 'p2';
-      if (this.isFrozen(key)) return;
-      const len = this.getPaddleLen(key);
-      const clamped = Math.max(0, Math.min(W - len, data.x));
-      if (idx === 0) this.gs.p1.x = clamped;
-      if (idx === 1) this.gs.p2.x = clamped;
+      const paddle = idx === 0 ? this.gs.p1 : this.gs.p2;
+      if (!this.isFrozen(key) && Number.isFinite(data?.x)) {
+        const len = this.getPaddleLen(key);
+        paddle.x = Math.max(0, Math.min(W - len, data.x));
+      }
+      // Which tick was on this player's screen (bounded: never ahead of the
+      // server, at most ACK_MAX_TICKS behind, never going backwards).
+      const raw = Number.isFinite(data?.seen) ? Math.round((data.seen as number) * 100) / 100 : this.tickNo;
+      const seen = Math.max(this.lastSeen[key], Math.min(this.tickNo, Math.max(this.tickNo - ACK_MAX_TICKS, raw)));
+      this.lastSeen[key] = seen;
+      const arr = this.samples[key];
+      arr.push({ seen, x: paddle.x });
+      if (arr.length > 240) { this.xBeforeSamples[key] = arr[arr.length - 241].x; arr.splice(0, arr.length - 240); }
     });
 
     this.onMessage("hb", () => {});
@@ -160,12 +183,9 @@ export class GameRoom extends Room {
       client.send("pong", { ts: data.ts });
     });
 
-    this.onMessage("latency", (client: Client, data: { ms: number }) => {
-      const idx = this.gameJoined.findIndex(p => p.sessionId === client.sessionId);
-      const clamped = Math.max(0, Math.min(250, data.ms | 0));
-      if (idx === 0) this.p1LatencyMs = clamped;
-      if (idx === 1) this.p2LatencyMs = clamped;
-    });
+    // Clients still report latency; hit judging no longer uses an estimate
+    // (it uses the tick each paddle report says was on screen).
+    this.onMessage("latency", () => {});
 
   }
 
@@ -214,22 +234,18 @@ export class GameRoom extends Room {
     if (this.gameInterval) clearInterval(this.gameInterval);
     this.gs = initGameState();
     this.broadcastCounter = 0;
-    this.pendingMiss = {};
+    this.tickNo = 0;
+    this.samples = { p1: [], p2: [] };
+    this.xBeforeSamples = { p1: this.gs.p1.x, p2: this.gs.p2.x };
+    this.lastSeen = { p1: 0, p2: 0 };
+    this.judge = {};
     this.gameInterval = setInterval(() => {
       if (!this.gs) return;
+      this.tickNo++;
       const winner = this.tickBall();
       this.broadcastCounter++;
-      // Every tick (60 Hz): the opponent's paddle and the ball reach each
-      // player as soon as the server has them (was every 2nd tick = 30 Hz).
-      {
-        this.broadcast('state', {
-          ball: this.gs.ball, p1: this.gs.p1, p2: this.gs.p2, delay: this.gs.delay,
-          powerup: this.gs.powerup,
-          activeEffects: this.gs.activeEffects,
-          obstacles: this.gs.obstacles,
-          bannerSeq: this.gs.bannerSeq, bannerText: this.gs.bannerText, bannerColor: this.gs.bannerColor
-        });
-      }
+      // Every tick (60 Hz), to each player (see sendState).
+      this.sendState();
       if (winner) {
         clearInterval(this.gameInterval!); this.gameInterval = null;
         this.endMatch(winner);
@@ -259,21 +275,14 @@ export class GameRoom extends Room {
       return null;
     }
 
+    // Confirm or correct earlier provisional calls once the defender's
+    // paddle reports for that moment are in.
+    this.settleJudgement('p1', now);
+    this.settleJudgement('p2', now);
+
     const p1x = s.p1.x, p2x = s.p2.x;
     const p1Len = this.getPaddleLen('p1');
     const p2Len = this.getPaddleLen('p2');
-
-    // A pending miss becomes a hit if the paddle reaches the crossing point
-    // before that player's window closes; otherwise the miss stands.
-    for (const key of ['p1', 'p2'] as const) {
-      const pm = this.pendingMiss[key];
-      if (!pm) continue;
-      if (now > pm.until) { delete this.pendingMiss[key]; continue; }
-      if (this.coversX(key === 'p1' ? p1x : p2x, key === 'p1' ? p1Len : p2Len, pm.x)) {
-        this.lateHit(key, pm, key === 'p1' ? p1x : p2x, key === 'p1' ? p1Len : p2Len, now);
-        delete this.pendingMiss[key];
-      }
-    }
 
     // Serve ramp: ease ball from 45% to full BALL_SPEED over 60 ticks.
     if (s._serveRamp && s._serveRamp > 0) {
@@ -299,10 +308,12 @@ export class GameRoom extends Room {
       if (b.x - BALL_R < 0)  { b.x = BALL_R;     b.vx =  Math.abs(b.vx); }
       if (b.x + BALL_R > W)  { b.x = W - BALL_R; b.vx = -Math.abs(b.vx); }
       this.checkObstacleCollisions();
-      if (this.hitPaddle(s.p1, p1x, true,  prevY, prevX, p1Len)) { delete this.pendingMiss.p1; break; }
-      if (this.hitPaddle(s.p2, p2x, false, prevY, prevX, p2Len)) { delete this.pendingMiss.p2; break; }
-      this.notePendingMiss('p1', prevY, now);
-      this.notePendingMiss('p2', prevY, now);
+      const inX = b.x, inVx = b.vx, inVy = b.vy, inHitter = b.lastHitter;
+      const fr = (i + 1) / steps;   // how far through this tick the ball is
+      if (this.hitPaddle(s.p1, p1x, true,  prevY, prevX, p1Len)) { this.openJudgement('p1', true, inX, inVx, inVy, inHitter, now, fr); break; }
+      if (this.hitPaddle(s.p2, p2x, false, prevY, prevX, p2Len)) { this.openJudgement('p2', true, inX, inVx, inVy, inHitter, now, fr); break; }
+      this.noteCrossing('p1', prevY, prevX, now, i, steps);
+      this.noteCrossing('p2', prevY, prevX, now, i, steps);
       if (this.scoreIfOut()) return this.checkScore();
     }
     if (this.scoreIfOut()) return this.checkScore();
@@ -310,65 +321,144 @@ export class GameRoom extends Room {
     return null;
   }
 
-  // ── Lag compensation ("favour the defender") ─────────────────────────────
-  // Each player draws their OWN paddle immediately (client-side prediction),
-  // but sees the ball ~one-way-latency late, and their input reaches us
-  // another one-way-latency later. So when the ball crosses a paddle's line
-  // here, the input showing where that player's paddle was when THEY saw the
-  // crossing is still up to 2 × latency away. Instead of calling the miss at
-  // once, it's held open that long; if the paddle arrives at the crossing
-  // point in time, it counts as a hit (lateHit). Capped so a slow connection
-  // can't stretch it.
-  private missWindowMs(key: 'p1' | 'p2'): number {
-    const lat = key === 'p1' ? this.p1LatencyMs : this.p2LatencyMs;
-    return Math.max(1000 / TICK_RATE, Math.min(MISS_WINDOW_MAX_MS, 2 * lat + 1000 / TICK_RATE));
-  }
-
+  // ── Lag compensation: judge from the defender's own screen ───────────────
+  // Your own paddle is drawn instantly, but the ball reaches your screen a
+  // little late and your paddle reports reach us a little late. So when the
+  // ball reaches a paddle's line, the server's copy of that paddle is out of
+  // date. The server makes a provisional call from what it has (no delay in
+  // the usual case), then settles it from the defender's reports: the paddle
+  // positions they had in the moment before the ball touched the line ON
+  // THEIR SCREEN (each report says which tick, to a fraction, was on screen).
+  // Moves made after that — the ball already at or past the line on their
+  // own screen — never count. If the reports disagree with the provisional call,
+  // the ball is corrected (late hit / late miss). The defender's page applies
+  // the same rule, so on their own screen the true outcome shows at once.
   private coversX(paddleX: number, len: number, x: number): boolean {
     return x + BALL_R > paddleX - FORGIVE && x - BALL_R < paddleX + len + FORGIVE;
   }
 
-  // Ball crossed this player's contact line moving toward them without a hit:
-  // open a pending miss (once per crossing).
-  private notePendingMiss(key: 'p1' | 'p2', prevY: number, now: number) {
-    if (this.pendingMiss[key]) return;
+  private contactY(key: 'p1' | 'p2'): number {
+    const s = this.gs!;
+    return key === 'p1' ? s.p1.y - BALL_R - 1 : s.p2.y + PADDLE_SHORT + BALL_R + 1;
+  }
+
+  private openJudgement(key: 'p1' | 'p2', prov: boolean, x: number, vx: number, vy: number, prevHitter: 'p1' | 'p2' | null, now: number, frac: number) {
+    if (this.judge[key]) return;
+    const c = Math.round((this.tickNo - 1 + Math.max(0, Math.min(1, frac))) * 100) / 100;
+    this.judge[key] = { s: this.tickNo, c, x, y: this.contactY(key), vx, vy, prov, prevHitter, t: now, until: now + JUDGE_MAX_MS };
+  }
+
+  // Ball crossed this player's contact line, moving toward them, without a
+  // provisional hit: provisional miss at the crossing point.
+  private noteCrossing(key: 'p1' | 'p2', prevY: number, prevX: number, now: number, step: number, steps: number) {
+    if (this.judge[key]) return;
     const s = this.gs!, b = s.ball, isP1 = key === 'p1';
     if (isP1 ? b.vy <= 0 : b.vy >= 0) return;
     const p = isP1 ? s.p1 : s.p2;
     const paddleY = isP1 ? p.y : p.y + PADDLE_SHORT;
-    const crossed = isP1
-      ? (prevY + BALL_R < paddleY && b.y + BALL_R >= paddleY)
-      : (prevY - BALL_R > paddleY && b.y - BALL_R <= paddleY);
-    if (crossed) this.pendingMiss[key] = { x: b.x, t: now, until: now + this.missWindowMs(key) };
+    const before = isP1 ? prevY + BALL_R : prevY - BALL_R, after = isP1 ? b.y + BALL_R : b.y - BALL_R;
+    const crossed = isP1 ? (before < paddleY && after >= paddleY) : (before > paddleY && after <= paddleY);
+    if (!crossed) return;
+    const f = (paddleY - before) / (after - before);
+    this.openJudgement(key, false, prevX + (b.x - prevX) * f, b.vx, b.vy, b.lastHitter, now, (step + f) / steps);
   }
 
-  // Score only once no pending miss is still open for the side that let it through.
-  private scoreIfOut(): boolean {
-    const s = this.gs!, b = s.ball;
-    if (b.y > H + 20 && !this.pendingMiss.p1) { s.p2.score++; this.resetBall(false); return true; }
-    if (b.y < -20    && !this.pendingMiss.p2) { s.p1.score++; this.resetBall(true);  return true; }
-    return false;
+  private settleJudgement(key: 'p1' | 'p2', now: number) {
+    const j = this.judge[key];
+    if (!j) return;
+    const arr = this.samples[key];
+    // Counted: where the paddle was in the last tick before contact on the
+    // defender's screen (the position carried into it, plus every move made
+    // during it). Reports arrive in order, so one from the contact moment or
+    // later means all earlier ones are in. Without one (a still paddle sends
+    // none), wait up to JUDGE_MAX_MS; the last known position is then the
+    // position it kept.
+    const complete = arr.length > 0 && arr[arr.length - 1].seen >= j.c;
+    if (!complete && now < j.until) return;
+    let carried = this.xBeforeSamples[key];
+    const during: number[] = [];
+    for (const sm of arr) {
+      if (sm.seen < j.c - 1) carried = sm.x;
+      else if (sm.seen < j.c) during.push(sm.x);
+    }
+    const len = this.getPaddleLen(key);
+    const viewX = [carried, ...during].find(x => this.coversX(x, len, j.x));
+    const viewHit = viewX !== undefined;
+    if (viewHit && !j.prov) this.lateHit(key, j, viewX as number, len, now);
+    if (!viewHit && j.prov) this.lateMiss(key, j, now);
+    delete this.judge[key];
   }
 
-  // A pending miss turned out to be a hit: bounce as hitPaddle would have at
-  // the crossing point, then carry the ball on for the time already elapsed.
-  private lateHit(key: 'p1' | 'p2', pm: PendingMiss, paddleX: number, len: number, now: number) {
-    const s = this.gs!, b = s.ball, isP1 = key === 'p1', p = isP1 ? s.p1 : s.p2;
-    const rel = Math.max(-1, Math.min(1, (pm.x - (paddleX + len / 2)) / (len / 2)));
-    const spd = Math.min(Math.hypot(b.vx, b.vy) + 0.3, SPEED_MAX);
-    b.vx = Math.sin(rel * (Math.PI / 4)) * spd;
-    b.vy = Math.cos(rel * (Math.PI / 4)) * spd * (isP1 ? -1 : 1);
-    const ticks = Math.min(30, Math.max(0, (now - pm.t) / (1000 / TICK_RATE)));
-    b.x = pm.x + b.vx * ticks;
-    b.y = (isP1 ? p.y - BALL_R - 1 : p.y + PADDLE_SHORT + BALL_R + 1) + b.vy * ticks;
+  private ticksSince(j: Judgement, now: number): number {
+    return Math.min(30, Math.max(0, (now - j.t) / (1000 / TICK_RATE)));
+  }
+
+  private foldWalls(b: { x: number; vx: number }) {
     if (b.x - BALL_R < 0) { b.x = 2 * BALL_R - b.x; b.vx =  Math.abs(b.vx); }
     if (b.x + BALL_R > W) { b.x = 2 * (W - BALL_R) - b.x; b.vx = -Math.abs(b.vx); }
+  }
+
+  // Provisional miss, but the defender's paddle was there: bounce from the
+  // contact point (as hitPaddle would have), carried on for the elapsed time.
+  private lateHit(key: 'p1' | 'p2', j: Judgement, paddleX: number, len: number, now: number) {
+    const b = this.gs!.ball, isP1 = key === 'p1';
+    const rel = Math.max(-1, Math.min(1, (j.x - (paddleX + len / 2)) / (len / 2)));
+    const spd = Math.min(Math.hypot(j.vx, j.vy) + 0.3, SPEED_MAX);
+    b.vx = Math.sin(rel * (Math.PI / 4)) * spd;
+    b.vy = Math.cos(rel * (Math.PI / 4)) * spd * (isP1 ? -1 : 1);
+    const k = this.ticksSince(j, now);
+    b.x = j.x + b.vx * k; b.y = j.y + b.vy * k;
+    this.foldWalls(b);
     b.lastHitter = key;
   }
 
+  // Provisional hit, but on the defender's screen the paddle wasn't there:
+  // the ball carries on through the line toward their goal.
+  private lateMiss(key: 'p1' | 'p2', j: Judgement, now: number) {
+    const b = this.gs!.ball;
+    b.vx = j.vx; b.vy = j.vy;
+    const k = this.ticksSince(j, now);
+    b.x = j.x + b.vx * k; b.y = j.y + b.vy * k;
+    this.foldWalls(b);
+    b.lastHitter = j.prevHitter;
+  }
+
+  // Score only once the call for the side that let it through is settled.
+  private scoreIfOut(): boolean {
+    const s = this.gs!, b = s.ball;
+    if (b.y > H + 20 && !this.judge.p1) { s.p2.score++; this.resetBall(false); return true; }
+    if (b.y < -20    && !this.judge.p2) { s.p1.score++; this.resetBall(true);  return true; }
+    return false;
+  }
+
+  // Each player gets the state with the tick number. While a provisional miss
+  // at one player's line is being settled, the OTHER player sees the ball held
+  // at that line (so they never see it go past and come back); the defender
+  // gets the true ball plus the judgement, which their page resolves itself.
+  private sendState() {
+    const s = this.gs!;
+    const base = {
+      tick: this.tickNo,
+      p1: s.p1, p2: s.p2, delay: s.delay,
+      powerup: s.powerup,
+      activeEffects: s.activeEffects,
+      obstacles: s.obstacles,
+      bannerSeq: s.bannerSeq, bannerText: s.bannerText, bannerColor: s.bannerColor
+    };
+    this.gameJoined.forEach((slot, idx) => {
+      const c = this.clients.find(cl => cl.sessionId === slot.sessionId);
+      if (!c) return;
+      const mine = idx === 0 ? this.judge.p1 : this.judge.p2;
+      const theirs = idx === 0 ? this.judge.p2 : this.judge.p1;
+      const ball = theirs && !theirs.prov ? { ...s.ball, x: theirs.x, y: theirs.y } : s.ball;
+      c.send('state', { ...base, ball, judge: mine ? { s: mine.s, c: mine.c, x: mine.x, y: mine.y, vx: mine.vx, vy: mine.vy, prov: mine.prov } : null });
+    });
+  }
+
   // Returns true if a collision occurred (caller should stop sub-stepping).
-  // paddleX is the player's current horizontal position (missed crossings are
-  // held open by the pending-miss window above); p.y never changes during a match.
+  // paddleX is the server's current copy of the player's position — a
+  // provisional call, settled from the player's own reports (see above);
+  // p.y never changes during a match.
   private hitPaddle(p: PaddleState, paddleX: number, isP1: boolean, prevY: number, prevX: number, len: number): boolean {
     const b = this.gs!.ball;
 
@@ -411,7 +501,7 @@ export class GameRoom extends Room {
     s.ball.vx = 0; s.ball.vy = 0;
     s.ball.lastHitter = null;
     delete s.activeEffects.ball;
-    this.pendingMiss = {};
+    this.judge = {};
     // 210 ticks @ 60 fps: first 120 (2 s) the client countdown check sees count>3
     // so nothing shows — clean "see the score" pause — then 90 ticks of 3/2/1 serve.
     s.delay = 210; s._pendingDir = towardsP1;
