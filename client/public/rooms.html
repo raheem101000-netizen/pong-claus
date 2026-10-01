@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PONG — Rooms</title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{width:100%;min-height:100%;background:#0d0d1a;color:#fff;font-family:'Space Grotesk',sans-serif;}
@@ -44,10 +44,6 @@ td.room-enter{text-align:right;}
 #rooms-empty{padding:48px 0;text-align:center;color:rgba(255,255,255,0.2);font-size:14px;line-height:2.2;}
 
 /* JOIN BY CODE */
-.join-code-section{display:flex;gap:10px;align-items:center;margin-bottom:32px;}
-.join-code-section label{font-size:12px;color:rgba(255,255,255,0.3);letter-spacing:1px;white-space:nowrap;}
-.code-input{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:#fff;padding:9px 16px;font-size:18px;font-family:monospace;border-radius:8px;outline:none;width:120px;letter-spacing:8px;text-align:center;}
-.code-input:focus{border-color:rgba(180,80,255,0.5);}
 .btn-outline{background:transparent;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.5);padding:9px 18px;font-family:'Space Grotesk',sans-serif;font-size:13px;border-radius:8px;cursor:pointer;transition:all 0.15s;}
 .btn-outline:hover{border-color:rgba(255,255,255,0.4);color:#fff;}
 
@@ -123,6 +119,26 @@ td.room-enter{text-align:right;}
 @media(max-width:600px){.container{padding:20px 14px;}.room-detail-header{flex-direction:column;align-items:flex-start;gap:10px;}}
 .tenten-back{font-family:'Space Grotesk',sans-serif;font-size:13px;letter-spacing:1px;color:rgba(255,255,255,0.6);text-decoration:none;margin-right:14px;white-space:nowrap;}
 .tenten-back:hover{color:#fff;}
+/* Create + Join with Code pair and the join popup — same rules as Puz Royale's
+   lobby (.header-right / .btn / .btn-sm / .btn-ghost / .modal-bg / .modal /
+   .field / .modal-btns / .error-inline), pz- prefixed so they don't clash with
+   Pong's own .modal; Puz's red accent is Pong's purple here. */
+.pz-header-right{display:flex;gap:10px;align-items:center;}
+.pz-btn{padding:9px 18px;border-radius:8px;border:none;font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:600;cursor:pointer;letter-spacing:.5px;transition:opacity .15s;}
+.pz-btn:hover{opacity:.85;}
+.pz-btn-accent{background:#b450ff;color:#fff;}
+.pz-btn-ghost{background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.7);border:1px solid rgba(255,255,255,0.12);}
+.pz-btn-sm{padding:6px 14px;font-size:12px;}
+.pz-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,0.8);display:none;align-items:center;justify-content:center;z-index:100;}
+.pz-modal-bg.open{display:flex;}
+.pz-modal{background:#111;border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:28px;width:100%;max-width:380px;}
+.pz-modal h3{font-family:'Press Start 2P',monospace;font-size:11px;color:#b450ff;margin-bottom:20px;letter-spacing:1px;}
+.pz-field{margin-bottom:14px;}
+.pz-field label{display:block;font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:6px;letter-spacing:.5px;}
+.pz-field input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:10px 14px;color:#fff;font-size:14px;font-family:'Space Grotesk',sans-serif;outline:none;}
+.pz-field input::placeholder{color:rgba(255,255,255,0.25);}
+.pz-modal-btns{display:flex;gap:8px;margin-top:20px;}
+.pz-error-inline{font-size:12px;color:#FF5555;min-height:16px;margin-top:6px;}
 </style>
 </head>
 <body>
@@ -143,7 +159,10 @@ td.room-enter{text-align:right;}
   <div id="list-view">
     <div class="room-list-header">
       <h2 id="list-heading" class="empty">Start by creating a room:</h2>
-      <button class="btn-purple" id="btn-create">+ Create Room</button>
+      <div class="pz-header-right">
+        <button class="pz-btn pz-btn-accent pz-btn-sm" id="btn-open-join">Join with Code</button>
+        <button class="pz-btn pz-btn-ghost pz-btn-sm" id="btn-create">+ Create</button>
+      </div>
     </div>
 
     <table id="rooms-table">
@@ -151,11 +170,6 @@ td.room-enter{text-align:right;}
     </table>
     <div id="rooms-empty">No open rooms yet.</div>
 
-    <div class="join-code-section">
-      <label>JOIN BY CODE</label>
-      <input class="code-input" id="code-input" type="text" maxlength="4" placeholder="----" autocomplete="off"/>
-      <button class="btn-outline" id="btn-joincode">Join →</button>
-    </div>
   </div>
 
   <!-- ROOM DETAIL VIEW -->
@@ -201,6 +215,19 @@ td.room-enter{text-align:right;}
 </div>
 
 <div id="statusbar">Connecting...</div>
+
+<!-- Join with Code (same layout as Puz Royale's lobby; Pong's 4-digit room code) -->
+<div class="pz-modal-bg" id="join-modal">
+  <div class="pz-modal">
+    <h3>JOIN WITH CODE</h3>
+    <div class="pz-field"><label>ROOM CODE</label><input id="code-input" type="text" maxlength="4" inputmode="numeric" placeholder="4-digit room code" autocomplete="off"></div>
+    <div class="pz-error-inline" id="join-error"></div>
+    <div class="pz-modal-btns">
+      <button class="pz-btn pz-btn-accent" style="flex:1;" id="btn-joincode">Join</button>
+      <button class="pz-btn pz-btn-ghost" id="btn-join-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <!-- Login gate: shown when there's no tenten.run login handoff -->
 <div id="login-gate" style="display:none;position:fixed;inset:0;z-index:300;background:rgba(8,8,16,0.95);align-items:center;justify-content:center;padding:16px;">
@@ -273,7 +300,7 @@ function showDetail() { document.getElementById('list-view').style.display='none
 socket.on('connect', ()=>{ status('Connected','ok'); socket.emit('room:list'); });
 socket.on('disconnect', ()=>status('Disconnected','err'));
 socket.on('connect_error', (e)=>{ status('Cannot connect to server','err'); if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { try { sessionStorage.removeItem('pongmp_auth'); } catch (_) {} if (e.message) document.getElementById('login-gate-msg').textContent = e.message; document.getElementById('login-gate').style.display = 'flex'; } });
-socket.on('room:error', ({message})=>status(message,'err'));
+socket.on('room:error', ({message})=>{ status(message,'err'); if(document.getElementById('join-modal').classList.contains('open')) document.getElementById('join-error').textContent=message; });
 
 socket.on('room:list', ({rooms})=>renderRoomList(rooms));
 socket.on('room:open',   ()=>socket.emit('room:list'));
@@ -281,7 +308,7 @@ socket.on('room:close',  ()=>socket.emit('room:list'));
 socket.on('room:update', ()=>socket.emit('room:list'));
 
 socket.on('room:created', ({room})=>{ myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
-socket.on('room:joined',  ({room,player})=>{ myRoom=room; isMaster=!!(player&&player.master); isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
+socket.on('room:joined',  ({room,player})=>{ closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
 socket.on('room:state',   room=>{ myRoom=room; renderPlayers(room); updateActions(); });
 socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); status(player.name+' joined','ok'); });
 socket.on('room:player:leave', ()=>{ sysMsg('A player left'); updateActions(); });
@@ -416,7 +443,14 @@ document.getElementById('toggle-private').onclick=()=>{ roomIsPublic=false; docu
 
 document.getElementById('btn-joincode').onclick=joinByCode;
 document.getElementById('code-input').addEventListener('keydown',e=>{ if(e.key==='Enter') joinByCode(); });
-function joinByCode(){ const code=document.getElementById('code-input').value.trim(); if(code.length!==4){status('Enter a 4-digit code','err');return;} socket.emit('room:join',{code}); }
+function joinByCode(){ const code=document.getElementById('code-input').value.trim(); if(!/^\d{4}$/.test(code)){ document.getElementById('join-error').textContent='Enter the 4-digit room code'; return; } document.getElementById('join-error').textContent=''; socket.emit('room:join',{code}); }
+// Join with Code popup (same behaviour as Puz Royale's: opens on the button,
+// closes on Cancel / backdrop / a successful join; errors show inside it).
+function openJoinModal(){ document.getElementById('code-input').value=''; document.getElementById('join-error').textContent=''; document.getElementById('join-modal').classList.add('open'); setTimeout(()=>document.getElementById('code-input').focus(),100); }
+function closeJoinModal(){ document.getElementById('join-modal').classList.remove('open'); }
+document.getElementById('btn-open-join').onclick=openJoinModal;
+document.getElementById('btn-join-cancel').onclick=closeJoinModal;
+document.getElementById('join-modal').addEventListener('click',e=>{ if(e.target.id==='join-modal') closeJoinModal(); });
 
 showList();
 </script>
