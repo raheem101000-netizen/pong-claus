@@ -130,8 +130,18 @@ function showPowerupBanner(text, color) {
   if (bannerTimer) clearTimeout(bannerTimer);
   bannerTimer = setTimeout(() => { banner.style.opacity = '0'; }, 1800);
 }
-let localPaddleX = null; // input intent only — NOT used for drawing
+// Your own paddle is drawn from your input straight away (client-side
+// prediction) instead of waiting for the server to echo it back — that echo
+// was a full network round trip behind every move. The server accepts this
+// position as sent (it only clamps it, and ignores it while you're frozen), so
+// prediction and server agree; draw() snaps back if they ever don't.
+let localPaddleX = null;
 let lastSentX    = null;
+let lastInputAt  = 0;     // performance.now() of the last key/touch move
+let lastHalfRtt  = 0;     // from the ping/pong below
+function myEffect() { const e = gameState && gameState.activeEffects; return e ? (myRole === 'p1' ? e.p1 : e.p2) : null; }
+function myPaddleLenS() { const e = myEffect(); return e && e.type === 'shrink' ? S_PADDLE_LONG * 0.45 : S_PADDLE_LONG; }
+function myPaddleFrozen() { const e = myEffect(); return !!(e && e.type === 'frozen'); }
 // Smoothly interpolated draw state — lerps toward server truth each frame
 let drawn = { p1x: null, p2x: null, bx: null, by: null };
 let lastFrameTs = null; // for delta-time-normalized smoothing in draw()
@@ -150,6 +160,7 @@ function connect() {
   }, 2000);
   socket.on('pong', function(data) {
     var halfRtt = Math.floor((Date.now() - data.ts) / 2);
+    lastHalfRtt = halfRtt;
     socket.emit('latency', { ms: halfRtt });
   });
   socket.on('disconnect', (reason) => console.log('[CLIENT] disconnected:', reason));
@@ -266,24 +277,18 @@ function draw(ts) {
   const flip = myRole === 'p2';
   const flipY   = (sy) => flip ? (S_H - sy - PADDLE_SHORT_S) : sy;
   const mirrorX = (sx, len) => flip ? (S_W - sx - len) : sx;
-  const myDrawnX  = myRole === 'p1' ? drawn.p1x : drawn.p2x;
+  const serverMyX = myRole === 'p1' ? s.p1.x : s.p2.x;
+  // Reconcile: if the server's position for us still differs once our last
+  // move has had time to reach it and come back (it ignored a move while we
+  // were frozen, say), take the server's.
+  if (localPaddleX !== null && Math.abs(serverMyX - localPaddleX) > 1 &&
+      performance.now() - lastInputAt > Math.max(400, 4 * lastHalfRtt + 100)) {
+    localPaddleX = serverMyX; lastSentX = serverMyX;
+  }
+  const myDrawnX  = (localPaddleX !== null && gameRunning) ? localPaddleX : (myRole === 'p1' ? drawn.p1x : drawn.p2x);
   const oppDrawnX = myRole === 'p1' ? drawn.p2x : drawn.p1x;
   const myServerY  = myRole === 'p1' ? s.p1.y : s.p2.y;
   const oppServerY = myRole === 'p1' ? s.p2.y : s.p1.y;
-
-  // NEARMISS: log input-intent vs server truth near our paddle so we can
-  // see how much input lag still exists even without prediction.
-  if (localPaddleX !== null && gameRunning && Math.abs(s.ball.y - myServerY) < 60) {
-    const serverMyX = myRole === 'p1' ? s.p1.x : s.p2.x;
-    console.log('NEARMISS', {
-      inputIntentX:  Math.round(localPaddleX),
-      serverPaddleX: Math.round(serverMyX),
-      drawnPaddleX:  Math.round(myDrawnX),
-      inputLag:      Math.round(localPaddleX - serverMyX),
-      ballX:         Math.round(drawn.bx),
-      ballY:         Math.round(drawn.by)
-    });
-  }
 
   const effects = s.activeEffects || {};
 
@@ -394,9 +399,12 @@ function applyTouch(e) {
   if (e.touches.length === 0) return;
   const rect = canvas.getBoundingClientRect();
   const t = e.touches[0];
+  if (myPaddleFrozen()) return;
   let serverX = ((t.clientX - rect.left) / rect.width) * S_W;
   if (myRole === 'p2') serverX = S_W - serverX;
-  localPaddleX = Math.max(0, Math.min(S_W - S_PADDLE_LONG, serverX - S_PADDLE_LONG / 2));
+  const len = myPaddleLenS();
+  localPaddleX = Math.max(0, Math.min(S_W - len, serverX - len / 2));
+  lastInputAt = performance.now();
   if (socket && socket.connected && gameRunning) {
     socket.emit('paddleMove', { x: localPaddleX });
     lastSentX = localPaddleX;
@@ -412,22 +420,29 @@ document.getElementById('btn-back-to-lobby').onclick=()=>{
   if (socket) socket.disconnect();
   window.location.href = backToLobbyURL();
 };
-// Track intended paddle position for sending to server. Runs every rAF so the
-// server gets input as fast as possible — unthrottled, deduplicated by position.
-function paddleLoop() {
+// Keyboard: moves the (predicted) paddle every frame and sends it to the
+// server as fast as possible — unthrottled, deduplicated by position. Speed is
+// per elapsed time, so it's the same on 60 Hz, 120 Hz or a slow phone.
+let lastLoopTs = null;
+function paddleLoop(ts) {
+  const now = ts || performance.now();
+  const dt = lastLoopTs != null ? Math.min(50, now - lastLoopTs) : 1000 / 60;
+  lastLoopTs = now;
   if (gameRunning) {
     if (localPaddleX === null) {
       localPaddleX = (myRole === 'p1'
         ? (gameState?.p1?.x ?? S_W/2 - S_PADDLE_LONG/2)
         : (gameState?.p2?.x ?? S_W/2 - S_PADDLE_LONG/2));
     }
-    const pspd = S_W * 0.032;
+    const pspd = S_W * 0.032 * (dt / (1000 / 60));
     let left  = keys['ArrowLeft']  || keys['a'] || keys['A'];
     let right = keys['ArrowRight'] || keys['d'] || keys['D'];
     if (myRole === 'p2') { const tmp = left; left = right; right = tmp; }
-    if (left)  localPaddleX -= pspd;
-    if (right) localPaddleX += pspd;
-    localPaddleX = Math.max(0, Math.min(S_W - S_PADDLE_LONG, localPaddleX));
+    if (!myPaddleFrozen()) {
+      if (left)  { localPaddleX -= pspd; lastInputAt = performance.now(); }
+      if (right) { localPaddleX += pspd; lastInputAt = performance.now(); }
+    }
+    localPaddleX = Math.max(0, Math.min(S_W - myPaddleLenS(), localPaddleX));
     if (socket && socket.connected && (lastSentX === null || Math.abs(localPaddleX - lastSentX) > 0.5)) {
       socket.emit('paddleMove', { x: localPaddleX });
       lastSentX = localPaddleX;
