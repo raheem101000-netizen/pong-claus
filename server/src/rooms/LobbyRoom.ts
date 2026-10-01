@@ -1,7 +1,10 @@
 import { Room, Client, matchMaker } from "@colyseus/core";
+import { authenticateGameToken, PongAuth } from "../auth";
+import { issueLaunchTicket } from "../launchTickets";
 
 interface PlayerData {
   id: string;
+  userId: number; // real tenten.run account (from the login handoff token)
   name: string;
   ready: boolean;
   master: boolean;
@@ -47,16 +50,23 @@ export class LobbyRoom extends Room {
   private pendingDeletion = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingPaymentCleanup = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // Every lobby connection must be a logged-in tenten.run account.
+  static async onAuth(token: string, options: any) {
+    return authenticateGameToken(token, options?.playerId);
+  }
+
   onCreate() {
     this.onMessage("room:list", (client: Client) => {
       client.send("room:list", { rooms: this.serializeList() });
     });
 
     this.onMessage("room:create", (client: Client, data: any) => {
+      const auth = client.auth as PongAuth;
       const code = generateCode(this.lobbyRooms);
       const pd: PlayerData = {
         id: client.sessionId,
-        name: data.playerName || data.player?.name || 'Player 1',
+        userId: auth.userId,
+        name: auth.displayName || 'Player 1',
         color: data.player?.color || '#b450ff',
         ready: false, master: true, paying: false
       };
@@ -86,9 +96,14 @@ export class LobbyRoom extends Room {
       const room = this.lobbyRooms[code];
       if (!room) { client.send('room:error', { message: 'Room not found' }); return; }
       if (room.started) { client.send('room:error', { message: 'Game already started' }); return; }
+      const auth = client.auth as PongAuth;
+      // One seat per account: the same account can't take both sides of a 1v1.
+      if (Object.values(room.players).some(p => p.userId === auth.userId && !p.paying)) {
+        client.send('room:error', { message: 'Your account is already in this room' }); return;
+      }
       if (Object.keys(room.players).length >= 2) {
-        const rejoiningName = data.playerName || data.player?.name || '';
-        const payingKey = Object.keys(room.players).find(sid => room.players[sid].paying && room.players[sid].name === rejoiningName);
+        // Rejoin after leaving the page: matched by account, not by typed name.
+        const payingKey = Object.keys(room.players).find(sid => room.players[sid].paying && room.players[sid].userId === auth.userId);
         if (!payingKey) { client.send('room:error', { message: 'Room is full' }); return; }
         const oldTimeout = this.pendingPaymentCleanup.get(payingKey);
         if (oldTimeout) clearTimeout(oldTimeout);
@@ -110,7 +125,8 @@ export class LobbyRoom extends Room {
 
       const pd: PlayerData = {
         id: client.sessionId,
-        name: data.playerName || data.player?.name || 'Player 2',
+        userId: auth.userId,
+        name: auth.displayName || 'Player 2',
         color: data.player?.color || '#4488FF',
         ready: false, master: false, paying: false
       };
@@ -146,12 +162,15 @@ export class LobbyRoom extends Room {
       const room = this.lobbyRooms[code];
       if (!room || room.master !== client.sessionId) return;
       const players = Object.values(room.players);
+      // Pong is 1v1, so a match needs its 2 players — but no payment and no
+      // ready-up requirement (testing): the host starts it once both are in.
       if (players.length < 2) { client.send('room:error', { message: 'Need 2 players' }); return; }
-      const allReady = players.every(p => p.ready);
-      if (!allReady) { client.send('room:error', { message: 'Waiting for all players to pay and ready up' }); return; }
 
       try {
-        const gameRoom = await matchMaker.createRoom("game_room", {});
+        const gameRoom = await matchMaker.createRoom("game_room", {
+          launchTicket: issueLaunchTicket(), // proves this match came from a lobby, not a client
+          allowedUserIds: players.map(p => p.userId),
+        });
         room.started = true;
         this.broadcastList();
         this.sendToRoom(room, 'room:game:start', {

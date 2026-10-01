@@ -131,9 +131,8 @@ td.room-enter{text-align:right;}
 </div>
 
 <div class="name-bar">
-  <label>YOUR NAME</label>
-  <input class="name-input" id="name-input" type="text" maxlength="12" placeholder="Enter your name..." autocomplete="off"/>
-  <button class="btn-purple" id="btn-setname">Set Name</button>
+  <label>PLAYING AS</label>
+  <span class="name-input" id="account-name" style="display:inline-block;min-width:160px;"></span>
 </div>
 
 <div class="container">
@@ -201,6 +200,15 @@ td.room-enter{text-align:right;}
 
 <div id="statusbar">Connecting...</div>
 
+<!-- Login gate: shown when there's no tenten.run login handoff -->
+<div id="login-gate" style="display:none;position:fixed;inset:0;z-index:300;background:rgba(8,8,16,0.95);align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#111;border:1px solid rgba(180,80,255,0.4);border-radius:12px;padding:28px;max-width:380px;text-align:center;font-family:'Space Grotesk',sans-serif;">
+    <div style="font-family:'Press Start 2P',monospace;font-size:11px;color:#b450ff;margin-bottom:16px;">LOG IN TO PLAY</div>
+    <div id="login-gate-msg" style="font-size:13px;color:rgba(255,255,255,0.6);line-height:1.6;margin-bottom:20px;">Pong Multiplayer pays real prizes, so you need a tenten.run account. Log in on tenten.run, then press PLAY MULTIPLAYER on Pong.</div>
+    <a href="https://www.tenten.run/?play=pongmp" style="display:inline-block;background:#b450ff;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700;">Log in on tenten.run to play</a>
+  </div>
+</div>
+
 <!-- CREATE MODAL -->
 <div class="modal-overlay" id="modal-overlay">
   <div class="modal">
@@ -230,23 +238,39 @@ td.room-enter{text-align:right;}
 // untouched and still fully work — they're just unreached while this is true.
 const FREE_PLAY = true;
 
+// ── tenten.run login handoff ─────────────────────────────────────────────────
+// Same pattern as FIFA / Puz Royale / Kurver: tenten.run's Pong MULTIPLAYER
+// button issues a game_tokens token and redirects here with
+// #token=…&player_id=…&name=… (a fragment — never sent to the server). It's
+// kept in sessionStorage for this tab (the game page reads it too), stripped
+// from the address bar, and sent on every Colyseus join by the adapter; the
+// server's onAuth turns it into the real user_id. No token → login gate.
+(function(){
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get('token') && h.get('player_id')) {
+    const a = { token: h.get('token'), playerId: Number(h.get('player_id')), name: h.get('name') || '' };
+    try { sessionStorage.setItem('pongmp_auth', JSON.stringify(a)); } catch (_) {}
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+})();
+let pongAuth = null;
+try { pongAuth = JSON.parse(sessionStorage.getItem('pongmp_auth')) || null; } catch (_) {}
+if (!pongAuth) document.getElementById('login-gate').style.display = 'flex';
+
 const socket = io();
 const COLORS = ['#b450ff','#4488FF'];
-let myName = localStorage.getItem('pong_name') || '';
+let myName = pongAuth ? (pongAuth.name || 'Player') : '';
 let myRoom = null, isMaster = false, isReady = false, roomIsPublic = true, pendingReady = false;
-if (myName) document.getElementById('name-input').value = myName;
+document.getElementById('account-name').textContent = myName;
 
 function status(msg, type) { const el=document.getElementById('statusbar'); el.textContent=msg; el.className=type||''; }
 function showList() { document.getElementById('list-view').style.display='block'; document.getElementById('room-detail').style.display='none'; }
 function showDetail() { document.getElementById('list-view').style.display='none'; document.getElementById('room-detail').style.display='block'; }
 
-document.getElementById('btn-setname').onclick = setName;
-document.getElementById('name-input').addEventListener('keydown', e=>{ if(e.key==='Enter') setName(); });
-function setName() { const v=document.getElementById('name-input').value.trim(); if(!v) return; myName=v; localStorage.setItem('pong_name',myName); status('Name set: '+myName,'ok'); }
 
 socket.on('connect', ()=>{ status('Connected','ok'); socket.emit('room:list'); });
 socket.on('disconnect', ()=>status('Disconnected','err'));
-socket.on('connect_error', ()=>status('Cannot connect to server','err'));
+socket.on('connect_error', (e)=>{ status('Cannot connect to server','err'); if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { try { sessionStorage.removeItem('pongmp_auth'); } catch (_) {} if (e.message) document.getElementById('login-gate-msg').textContent = e.message; document.getElementById('login-gate').style.display = 'flex'; } });
 socket.on('room:error', ({message})=>status(message,'err'));
 
 socket.on('room:list', ({rooms})=>renderRoomList(rooms));
@@ -291,8 +315,7 @@ function renderRoomList(rooms) {
 }
 
 function joinRoom(id) {
-  if(!myName){ status('Set your name first','err'); return; }
-  socket.emit('room:join',{room:id, playerName:myName});
+  socket.emit('room:join',{room:id});
 }
 
 function renderDetail(room) {
@@ -337,12 +360,11 @@ function updateActions() {
   if(!myRoom) return;
   const players=myRoom.players||[];
   const hasGuest=players.length===2;
-  // Pay button: show to everyone who hasn't paid yet
-  btnReady.style.display=(!isReady)?'inline-block':'none';
-  // Start button: host only, after host has paid, and guest is also ready
-  const guestReady=players.filter(p=>!p.master).every(p=>p.ready);
-  btnStart.style.display=(isMaster && isReady)?'inline-block':'none';
-  btnStart.disabled=!(hasGuest && guestReady);
+  // No payment / ready-up step (testing): the host starts the 1v1 as soon as
+  // both players are in.
+  btnReady.style.display='none';
+  btnStart.style.display=isMaster?'inline-block':'none';
+  btnStart.disabled=!hasGuest;
   if(isReady){ btnReady.textContent='✓ Paid!'; btnReady.classList.add('is-ready'); }
   else { btnReady.textContent=FREE_PLAY?'READY (FREE)':'PAY & READY ($0.50)'; btnReady.classList.remove('is-ready'); }
 }
@@ -355,25 +377,13 @@ document.getElementById('chat-input').addEventListener('keydown',e=>{ if(e.key==
 function sendChat(){ const inp=document.getElementById('chat-input'); const content=inp.value.trim(); if(!content||!myRoom) return; socket.emit('room:talk',{content}); inp.value=''; }
 
 document.getElementById('btn-ready').onclick=()=>{
-  if(!myName){status('Set your name first','err');return;}
-  if(isReady) return;
-  // dev=MEDIATEST is a pre-existing secret bypass, left as-is (harmless, redundant while
-  // FREE_PLAY is on) — remove it separately when payment is restored.
-  const devBypass=FREE_PLAY || new URLSearchParams(window.location.search).get('dev')==='MEDIATEST';
-  if(devBypass){ isReady=true; socket.emit('room:ready'); updateActions(); return; }
-  if(!myRoom){ status('Join a room first','err'); return; }
-  status('Redirecting to payment...','');
-  socket.emit('room:paying');
-  localStorage.setItem('pending_room',myRoom.code);
-  localStorage.setItem('pending_player',myName);
-  fetch('/create-multiplayer-checkout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room_id:myRoom.code,player_id:myName})})
-    .then(r=>r.json()).then(d=>{ if(d.url) window.location.href=d.url; else status('Payment error','err'); }).catch(()=>status('Payment error','err'));
+  // No payment (testing): Ready just tells the room you're ready.
+  if(isReady || !myRoom) return;
+  isReady=true; socket.emit('room:ready'); updateActions();
 };
 
 document.getElementById('btn-start').onclick=()=>{
-  const players=myRoom?.players||[];
-  const guestReady=players.filter(p=>!p.master).every(p=>p.ready);
-  if(!guestReady){status('Waiting for opponent to ready up','err');return;}
+  if((myRoom?.players||[]).length<2){status('Waiting for an opponent','err');return;}
   socket.emit('room:launch');
 };
 
@@ -395,7 +405,7 @@ document.getElementById('modal-name').addEventListener('keydown',e=>{ if(e.key==
 function createRoom(){
   const name=document.getElementById('modal-name').value.trim();
   if(!name) return;
-  socket.emit('room:create',{name,open:roomIsPublic,playerName:myName});
+  socket.emit('room:create',{name,open:roomIsPublic});
   document.getElementById('modal-overlay').classList.remove('open');
 }
 
@@ -404,25 +414,7 @@ document.getElementById('toggle-private').onclick=()=>{ roomIsPublic=false; docu
 
 document.getElementById('btn-joincode').onclick=joinByCode;
 document.getElementById('code-input').addEventListener('keydown',e=>{ if(e.key==='Enter') joinByCode(); });
-function joinByCode(){ if(!myName){status('Set your name first','err');return;} const code=document.getElementById('code-input').value.trim(); if(code.length!==4){status('Enter a 4-digit code','err');return;} socket.emit('room:join',{code,playerName:myName}); }
-
-const params=new URLSearchParams(window.location.search);
-if(params.get('name')){ myName=params.get('name'); document.getElementById('name-input').value=myName; localStorage.setItem('pong_name',myName); }
-
-// Payment return: read room from localStorage (fallback for expired URL params), auto-rejoin and mark ready
-if(params.get('paid')==='true'){
-  const retRoom=params.get('room')||localStorage.getItem('pending_room');
-  const retPlayer=params.get('player')||localStorage.getItem('pending_player');
-  localStorage.removeItem('pending_room');
-  localStorage.removeItem('pending_player');
-  if(retRoom){
-    if(retPlayer){ myName=decodeURIComponent(retPlayer); document.getElementById('name-input').value=myName; localStorage.setItem('pong_name',myName); }
-    pendingReady=true;
-    function joinAfterPayment(){ socket.emit('room:join',{code:retRoom,playerName:myName}); }
-    if(socket.connected) joinAfterPayment();
-    else socket.on('connect',joinAfterPayment);
-  }
-}
+function joinByCode(){ const code=document.getElementById('code-input').value.trim(); if(code.length!==4){status('Enter a 4-digit code','err');return;} socket.emit('room:join',{code}); }
 
 showList();
 </script>
