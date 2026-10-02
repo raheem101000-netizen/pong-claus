@@ -20,6 +20,7 @@ interface LobbyRoomData {
   master: string;
   players: Record<string, PlayerData>;
   started: boolean;
+  kicked: Set<number>;       // accounts the host removed; they can't rejoin this room
 }
 
 const ROOM_NAME_MAX = 24;      // same as Puz Royale's room name field
@@ -84,7 +85,7 @@ export class LobbyRoom extends Room {
       const room: LobbyRoomData = {
         code, name,
         open: !priv, password: priv ? password : null, master: client.sessionId,
-        players: { [client.sessionId]: pd }, started: false
+        players: { [client.sessionId]: pd }, started: false, kicked: new Set<number>()
       };
       this.lobbyRooms[code] = room;
       this.clientRoom.set(client.sessionId, code);
@@ -108,6 +109,7 @@ export class LobbyRoom extends Room {
       if (!room) { client.send('room:error', { message: 'Room not found' }); return; }
       if (room.started) { client.send('room:error', { message: 'Game already started' }); return; }
       const auth = client.auth as PongAuth;
+      if (room.kicked.has(auth.userId)) { client.send('room:error', { message: 'You were removed from this room by the host' }); return; }
       // One seat per account: the same account can't take both sides of a 1v1.
       if (Object.values(room.players).some(p => p.userId === auth.userId && !p.paying)) {
         client.send('room:error', { message: 'Your account is already in this room' }); return;
@@ -178,9 +180,12 @@ export class LobbyRoom extends Room {
       const room = this.lobbyRooms[code];
       if (!room || room.master !== client.sessionId) return;
       const players = Object.values(room.players);
-      // Pong is 1v1, so a match needs its 2 players — but no payment and no
-      // ready-up requirement (testing): the host starts it once both are in.
+      // Pong is 1v1: a match needs its 2 players, and the non-host player must
+      // have pressed Ready (the host starts instead of readying). No payment.
       if (players.length < 2) { client.send('room:error', { message: 'Need 2 players' }); return; }
+      if (!players.filter(p => p.id !== room.master).every(p => p.ready)) {
+        client.send('room:error', { message: 'Waiting for your opponent to be ready' }); return;
+      }
 
       try {
         const gameRoom = await matchMaker.createRoom("game_room", {
@@ -195,6 +200,29 @@ export class LobbyRoom extends Room {
         });
       } catch (e) {
         client.send('room:error', { message: 'Failed to start game' });
+      }
+    });
+
+    // Host kick: only the host, never themselves; the removed player is told
+    // why, taken out of the room (as if they'd left), and can't rejoin it.
+    this.onMessage("room:kick", (client: Client, data: any) => {
+      const code = this.clientRoom.get(client.sessionId);
+      const room = code ? this.lobbyRooms[code] : undefined;
+      if (!room || room.master !== client.sessionId) { client.send('room:error', { message: 'Only the host can remove players' }); return; }
+      if (room.started) return;
+      const targetId = String(data?.id || '');
+      if (targetId === client.sessionId) { client.send('room:error', { message: "You can't remove yourself" }); return; }
+      const target = room.players[targetId];
+      if (!target) { client.send('room:error', { message: 'Player not found' }); return; }
+      room.kicked.add(target.userId);
+      const targetClient = this.clients.find(c => c.sessionId === targetId);
+      if (targetClient) {
+        targetClient.send('room:kicked', { message: 'You were removed by the host' });
+        this.handleLeave(targetClient, true);
+      } else {
+        delete room.players[targetId];
+        this.sendToRoom(room, 'room:state', serializeRoom(room));
+        this.broadcastList();
       }
     });
 
