@@ -71,6 +71,8 @@ td.room-enter{text-align:right;}
 .ready-badge{font-size:11px;padding:4px 12px;border-radius:6px;font-weight:600;letter-spacing:1px;}
 .ready-yes{background:rgba(76,255,108,0.15);color:#4CFF6C;}
 .ready-no{background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.3);}
+.conn-notice{display:none;margin:12px 32px 0;padding:9px 14px;border-radius:8px;font-size:13px;font-weight:600;background:rgba(255,180,0,0.1);border:1px solid rgba(255,180,0,0.35);color:#FFB400;}
+.room-notice{font-size:12px;line-height:1.5;color:rgba(255,255,255,0.4);margin:-6px 0 18px;}
 .kick-btn{background:none;border:1px solid rgba(255,85,85,0.35);color:#ff6b6b;border-radius:6px;width:26px;height:26px;line-height:22px;font-size:12px;cursor:pointer;padding:0;}
 .kick-btn:hover{background:rgba(255,85,85,0.15);}
 .ready-host{background:rgba(180,80,255,0.15);color:#b450ff;}
@@ -142,6 +144,8 @@ td.room-enter{text-align:right;}
   <span class="name-input" id="account-name" style="display:inline-block;min-width:160px;"></span>
 </div>
 
+<div class="conn-notice" id="conn-notice"></div>
+
 <div class="container">
 
   <!-- ROOM LIST VIEW -->
@@ -175,6 +179,7 @@ td.room-enter{text-align:right;}
     <button class="btn-start-now" id="btn-start">Start now!</button>
     <button class="btn-ready" id="btn-ready">Ready?</button>
 
+    <p class="room-notice">Rooms stay open about 10 minutes. If no one joins — or you step away and come back — your room may still be here; if it's closed, just create a new one.</p>
     <p class="players-count" id="players-count">No players</p>
 
     <table id="players-table">
@@ -291,6 +296,12 @@ function showDetail() { document.getElementById('list-view').style.display='none
 
 socket.on('connect', ()=>{ status('Connected','ok'); socket.emit('room:list'); });
 socket.on('disconnect', ()=>status('Disconnected','err'));
+// Connection dropped → reconnecting (the server holds our seat for 12 minutes);
+// if the room is gone, say so and go back to the room list (no dead room on screen).
+function setConnNotice(t){ const el=document.getElementById('conn-notice'); el.textContent=t||''; el.style.display=t?'block':'none'; }
+socket.on('drop', ()=>setConnNotice('Connection lost — reconnecting…'));
+socket.on('resume', ()=>{ setConnNotice(''); status('Reconnected','ok'); });
+socket.on('connection_lost', ()=>{ if(myRoom){ myRoom=null; isMaster=false; isReady=false; showList(); } setConnNotice('Connection lost — your room may have closed. Rejoin with its code, or create a new one.'); });
 socket.on('connect_error', (e)=>{ status('Cannot connect to server','err'); if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { try { sessionStorage.removeItem('pongmp_auth'); } catch (_) {} if (e.message) document.getElementById('login-gate-msg').textContent = e.message; document.getElementById('login-gate').style.display = 'flex'; } });
 socket.on('room:error', ({message})=>{ status(message,'err');
   if(document.getElementById('join-modal').classList.contains('open')) document.getElementById('join-error').textContent=message;
@@ -303,8 +314,8 @@ socket.on('room:update', ()=>socket.emit('room:list'));
 
 // The host removed us: back to the room list with the reason.
 socket.on('room:kicked', ({message})=>{ myRoom=null; isMaster=false; isReady=false; showList(); status(message||'You were removed by the host','err'); socket.emit('room:list'); });
-socket.on('room:created', ({room})=>{ closeCreateModal(); myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
-socket.on('room:joined',  ({room,player})=>{ closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
+socket.on('room:created', ({room})=>{ setConnNotice(''); closeCreateModal(); myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
+socket.on('room:joined',  ({room,player})=>{ setConnNotice(''); closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
 socket.on('room:state',   room=>{ myRoom=room; renderPlayers(room); updateActions(); });
 socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); status(player.name+' joined','ok'); });
 socket.on('room:player:leave', ()=>{ sysMsg('A player left'); updateActions(); });

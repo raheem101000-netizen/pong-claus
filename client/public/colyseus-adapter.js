@@ -90,10 +90,19 @@
       room.onLeave(function (code) {
         _connected = false;
         fire('disconnect', 'transport close');
-        if (code !== 1000) {
-          setTimeout(reconnect, 1500);
-        }
+        if (code === 1000) return;
+        // Lobby: resume the SAME session (the server holds the seat for 12
+        // minutes). The game page keeps its own rejoin below.
+        if (!isGame) { resumeLobby(room.reconnectionToken); return; }
+        setTimeout(reconnect, 1500);
       });
+      if (!isGame) {
+        // The SDK's own quick retries run only ~3 s; then resumeLobby takes
+        // over (it also learns at once when the seat has expired).
+        if (room.reconnection) room.reconnection.maxRetries = 4;
+        if (room.onDrop) room.onDrop(function () { fire('drop'); });
+        if (room.onReconnect) room.onReconnect(function () { fire('resume'); });
+      }
 
       room.onError(function (code, msg) {
         console.error('[colyseus-adapter] room error', code, msg);
@@ -126,6 +135,53 @@
           fireMgr('reconnect', _attempts);
         })
         .catch(function () { setTimeout(reconnect, 3000); });
+    }
+
+    // ── Lobby: reconnecting after a drop (phone in the background, network blip)
+    // The SDK retries on its own for about a minute; after that we keep trying
+    // to resume the SAME lobby session — every few seconds and as soon as the
+    // tab is back in front — for up to 12 minutes (the server holds the seat
+    // that long). If the seat/room is gone: 'connection_lost', then a fresh
+    // lobby session so the room list keeps working.
+    var LOBBY_RECONNECT_MS = 12 * 60 * 1000;
+    var resume = null;
+    function resumeLobby(token) {
+      if (!token) { lobbyLost(); return; }
+      resume = { token: token, until: Date.now() + LOBBY_RECONNECT_MS, busy: false, timer: null };
+      fire('drop');
+      tryResume();
+    }
+    function tryResume() {
+      var r = resume;
+      if (!r || r.busy) return;
+      if (Date.now() > r.until) { lobbyLost(); return; }
+      r.busy = true;
+      authedClient().client.reconnect(r.token).then(function (room) {
+        if (resume !== r) { try { room.leave(); } catch (e) {} return; }
+        resume = null;
+        _attempts++;
+        attach(room);
+        fire('resume');
+        fireMgr('reconnect', _attempts);
+      }).catch(function (e) {
+        r.busy = false;
+        // Seat/room gone (522/524 also arrive message-less through Cloudflare).
+        if (e && (e.code === 522 || e.code === 524 || /expired|not found|invalid/i.test(e.message || ''))) { lobbyLost(); return; }
+        r.timer = setTimeout(tryResume, 5000);
+      });
+    }
+    function lobbyLost() {
+      if (resume) clearTimeout(resume.timer);
+      resume = null;
+      fire('connection_lost');
+      reconnect();
+    }
+    if (!isGame) {
+      // Closing or leaving the page is a real leave (frees the seat now), unlike
+      // a phone switching apps, which only hides the page and keeps the hold.
+      window.addEventListener('pagehide', function () { if (_room) { try { _room.leave(true); } catch (e) {} } });
+      document.addEventListener('visibilitychange', function () { if (!document.hidden && resume) { clearTimeout(resume.timer); tryResume(); } });
+      window.addEventListener('online', function () { if (resume) { clearTimeout(resume.timer); tryResume(); } });
     }
 
     whenReady(function () {
