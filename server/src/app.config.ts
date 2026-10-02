@@ -1,4 +1,4 @@
-import { defineServer, defineRoom, monitor } from "colyseus";
+import { defineServer, defineRoom, monitor, WebSocketTransport } from "colyseus";
 import { matchMaker } from "@colyseus/core";
 import express from "express";
 import path from "path";
@@ -13,6 +13,11 @@ const neonPool = process.env.DATABASE_URL
     : null;
 
 export const server = defineServer({
+    // Heartbeat: ping every 10 s, drop a connection after 3 missed pings
+    // (~30 s), so a quick app switch on a phone isn't treated as leaving
+    // (Colyseus default was 3 s x 2 ≈ 6–9 s).
+    transport: new WebSocketTransport({ pingInterval: 10000, pingMaxRetries: 3 }),
+
     rooms: {
         lobby_room: defineRoom(LobbyRoom),
         game_room:  defineRoom(GameRoom),

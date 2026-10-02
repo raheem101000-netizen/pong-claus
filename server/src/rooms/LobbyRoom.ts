@@ -2,6 +2,10 @@ import { Room, Client, matchMaker } from "@colyseus/core";
 import { authenticateGameToken, PongAuth } from "../auth";
 import { issueLaunchTicket } from "../launchTickets";
 
+// How long a dropped player's seat is held (12 minutes; LOBBY_RECONNECT_SECONDS
+// overrides it for tests only).
+const LOBBY_RECONNECT_SECONDS = Number(process.env.LOBBY_RECONNECT_SECONDS) || 12 * 60;
+
 interface PlayerData {
   id: string;
   userId: number; // real tenten.run account (from the login handoff token)
@@ -241,6 +245,24 @@ export class LobbyRoom extends Room {
   }
 
   onJoin(_client: Client) {}
+
+  // Reconnection grace: a player whose connection drops (phone put in the
+  // background, network blip) keeps their seat in their Pong room, ready state and presence for LOBBY_RECONNECT_SECONDS; the client SDK resumes the SAME session,
+  // so nobody sees them "leave". If they don't come back in time, onLeave runs
+  // as for a normal leave. A consented leave (closing the page, the host's
+  // kick) skips this and goes straight to onLeave.
+  onDrop(client: Client) {
+    const held: any = this.allowReconnection(client, LOBBY_RECONNECT_SECONDS);
+    held?.catch?.(() => {});
+  }
+
+  // Back after a drop: resend their room (anything broadcast while away) and the list.
+  onReconnect(client: Client) {
+    const code = this.clientRoom.get(client.sessionId);
+    const room = code ? this.lobbyRooms[code] : undefined;
+    if (room && room.players[client.sessionId]) client.send('room:state', serializeRoom(room));
+    client.send('room:list', { rooms: this.serializeList() });
+  }
 
   onLeave(client: Client) {
     this.handleLeave(client, false);
