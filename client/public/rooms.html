@@ -71,6 +71,8 @@ td.room-enter{text-align:right;}
 .ready-badge{font-size:11px;padding:4px 12px;border-radius:6px;font-weight:600;letter-spacing:1px;}
 .ready-yes{background:rgba(76,255,108,0.15);color:#4CFF6C;}
 .ready-no{background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.3);}
+.kick-btn{background:none;border:1px solid rgba(255,85,85,0.35);color:#ff6b6b;border-radius:6px;width:26px;height:26px;line-height:22px;font-size:12px;cursor:pointer;padding:0;}
+.kick-btn:hover{background:rgba(255,85,85,0.15);}
 .ready-host{background:rgba(180,80,255,0.15);color:#b450ff;}
 .p-empty{color:rgba(255,255,255,0.2);font-style:italic;padding:16px 12px;}
 
@@ -181,6 +183,7 @@ td.room-enter{text-align:right;}
           <th></th>
           <th>NAME</th>
           <th style="text-align:right">READY?</th>
+          <th></th>
         </tr>
       </thead>
       <tbody id="players-tbody"></tbody>
@@ -298,6 +301,8 @@ socket.on('room:open',   ()=>socket.emit('room:list'));
 socket.on('room:close',  ()=>socket.emit('room:list'));
 socket.on('room:update', ()=>socket.emit('room:list'));
 
+// The host removed us: back to the room list with the reason.
+socket.on('room:kicked', ({message})=>{ myRoom=null; isMaster=false; isReady=false; showList(); status(message||'You were removed by the host','err'); socket.emit('room:list'); });
 socket.on('room:created', ({room})=>{ closeCreateModal(); myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
 socket.on('room:joined',  ({room,player})=>{ closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
 socket.on('room:state',   room=>{ myRoom=room; renderPlayers(room); updateActions(); });
@@ -363,10 +368,13 @@ function renderPlayers(room) {
       :p.ready
         ?'<span class="ready-badge ready-yes">✓ Ready</span>'
         :'<span class="ready-badge ready-no">Not ready</span>';
+    // The host sees ✕ to remove the other player.
+    const kick=(isMaster && !p.master)?`<button class="kick-btn" title="Remove from room" onclick="kickPlayer('${esc(p.id)}')">✕</button>`:'';
     tr.innerHTML=`
       <td><span class="p-color-dot" style="background:${COLORS[i]||'#fff'}"></span></td>
-      <td class="p-name-cell">${p.name}${isMe?' <span style="color:rgba(255,255,255,0.3);font-size:11px;">(you)</span>':''}</td>
-      <td class="p-ready-cell">${badge}</td>`;
+      <td class="p-name-cell">${esc(p.name)}${isMe?' <span style="color:rgba(255,255,255,0.3);font-size:11px;">(you)</span>':''}</td>
+      <td class="p-ready-cell">${badge}</td>
+      <td class="p-kick-cell">${kick}</td>`;
     tbody.appendChild(tr);
   });
   if(players.length<2){
@@ -384,13 +392,15 @@ function updateActions() {
   if(!myRoom) return;
   const players=myRoom.players||[];
   const hasGuest=players.length===2;
-  // No payment / ready-up step (testing): the host starts the 1v1 as soon as
-  // both players are in.
-  btnReady.style.display='none';
+  // Ready-check (no payment): the guest presses Ready; the host's Start is
+  // enabled once the guest is in and ready (the server enforces the same).
+  const guestReady=hasGuest && players.filter(p=>!p.master).every(p=>p.ready);
+  btnReady.style.display=isMaster?'none':'inline-block';
   btnStart.style.display=isMaster?'inline-block':'none';
-  btnStart.disabled=!hasGuest;
-  if(isReady){ btnReady.textContent='✓ Paid!'; btnReady.classList.add('is-ready'); }
-  else { btnReady.textContent=FREE_PLAY?'READY (FREE)':'PAY & READY ($0.50)'; btnReady.classList.remove('is-ready'); }
+  btnStart.disabled=!guestReady;
+  btnStart.title=guestReady?'':(hasGuest?'Waiting for your opponent to be ready':'Waiting for an opponent');
+  if(isReady){ btnReady.textContent='✓ Ready'; btnReady.classList.add('is-ready'); }
+  else { btnReady.textContent='Ready?'; btnReady.classList.remove('is-ready'); }
 }
 
 function addMsg(player,content){ const box=document.getElementById('chat-msgs'); const d=document.createElement('div'); d.className='chat-line'; d.innerHTML=`<span class="chat-author">${player}:</span> ${content}`; box.appendChild(d); box.scrollTop=box.scrollHeight; }
@@ -405,6 +415,8 @@ document.getElementById('btn-ready').onclick=()=>{
   if(isReady || !myRoom) return;
   isReady=true; socket.emit('room:ready'); updateActions();
 };
+
+function kickPlayer(id){ if(myRoom && isMaster) socket.emit('room:kick',{id}); }
 
 document.getElementById('btn-start').onclick=()=>{
   if((myRoom?.players||[]).length<2){status('Waiting for an opponent','err');return;}
