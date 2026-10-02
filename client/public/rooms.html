@@ -99,22 +99,9 @@ td.room-enter{text-align:right;}
 #statusbar.err{color:#ff4444;}
 
 /* MODAL */
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:99999;display:none;align-items:center;justify-content:center;}
-.modal-overlay.open{display:flex;}
-.modal{background:#0d0d1a;border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:32px;width:340px;max-width:92vw;}
-.modal h3{color:#fff;font-size:18px;font-weight:700;margin-bottom:22px;}
-.modal-field{margin-bottom:16px;}
-.modal-field label{font-size:11px;color:rgba(255,255,255,0.3);letter-spacing:1px;display:block;margin-bottom:6px;}
-.modal-field input{width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:10px 14px;font-family:'Space Grotesk',sans-serif;font-size:14px;outline:none;}
-.modal-field input:focus{border-color:rgba(255,255,255,0.3);}
-.modal-field input::placeholder{color:rgba(255,255,255,0.3);}
-.toggle-row{display:flex;gap:8px;}
-.toggle-btn{flex:1;padding:9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.5);cursor:pointer;font-family:'Space Grotesk',sans-serif;font-size:12px;font-weight:600;transition:all 0.15s;}
-.toggle-btn.active{background:rgba(180,80,255,0.2);border-color:#b450ff;color:#b450ff;}
-.modal-actions{display:flex;gap:10px;margin-top:24px;}
-.modal-submit{flex:1;padding:11px 0;background:#b450ff;color:#fff;border:none;border-radius:8px;font-family:'Space Grotesk',sans-serif;font-size:14px;font-weight:600;cursor:pointer;}
-.modal-submit:disabled{opacity:0.35;cursor:not-allowed;}
-.modal-cancel{padding:11px 18px;background:transparent;color:rgba(255,255,255,0.45);border:1px solid rgba(255,255,255,0.15);border-radius:8px;font-family:'Space Grotesk',sans-serif;font-size:14px;font-weight:600;cursor:pointer;}
+.toggle-row{display:flex;gap:8px;margin-bottom:14px;}
+.toggle-btn{flex:1;padding:9px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:rgba(255,255,255,0.4);font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:600;cursor:pointer;}
+.toggle-btn.active{background:rgba(180,80,255,0.2);border-color:rgba(180,80,255,0.5);color:#b450ff;}
 
 @media(max-width:600px){.container{padding:20px 14px;}.room-detail-header{flex-direction:column;align-items:flex-start;gap:10px;}}
 .tenten-back{font-family:'Space Grotesk',sans-serif;font-size:13px;letter-spacing:1px;color:rgba(255,255,255,0.6);text-decoration:none;margin-right:14px;white-space:nowrap;}
@@ -179,6 +166,7 @@ td.room-enter{text-align:right;}
       <div class="room-code-wrap" id="room-code-wrap">
         <div class="room-code-label">ROOM CODE</div>
         <div class="room-code-val" id="room-code-val">----</div>
+        <div id="room-code-pass" style="display:none;font-size:11px;color:rgba(255,255,255,0.45);margin-top:4px;">Password: <span id="room-code-pw" style="color:#fff;"></span></div>
       </div>
     </div>
 
@@ -219,8 +207,9 @@ td.room-enter{text-align:right;}
 <!-- Join with Code (same layout as Puz Royale's lobby; Pong's 4-digit room code) -->
 <div class="pz-modal-bg" id="join-modal">
   <div class="pz-modal">
-    <h3>JOIN WITH CODE</h3>
-    <div class="pz-field"><label>ROOM CODE</label><input id="code-input" type="text" maxlength="4" inputmode="numeric" placeholder="4-digit room code" autocomplete="off"></div>
+    <h3 id="join-title">JOIN WITH CODE</h3>
+    <div class="pz-field" id="join-code-field"><label>ROOM CODE</label><input id="code-input" type="text" maxlength="4" inputmode="numeric" placeholder="4-digit room code" autocomplete="off"></div>
+    <div class="pz-field"><label id="join-pass-label">PASSWORD (PRIVATE ROOMS ONLY)</label><input id="join-password" type="password" maxlength="20" placeholder="Leave blank for public rooms" autocomplete="off"></div>
     <div class="pz-error-inline" id="join-error"></div>
     <div class="pz-modal-btns">
       <button class="pz-btn pz-btn-accent" style="flex:1;" id="btn-joincode">Join</button>
@@ -239,22 +228,20 @@ td.room-enter{text-align:right;}
 </div>
 
 <!-- CREATE MODAL -->
-<div class="modal-overlay" id="modal-overlay">
-  <div class="modal">
-    <h3>Create a Room</h3>
-    <div class="modal-field">
-      <input id="modal-name" type="text" maxlength="24" placeholder="Room name..." autocomplete="off"/>
+<!-- Create (same layout as Puz Royale's lobby: name, Public/Private, password for Private) -->
+<div class="pz-modal-bg" id="modal-overlay">
+  <div class="pz-modal">
+    <h3>CREATE ROOM</h3>
+    <div class="pz-field"><label>ROOM NAME</label><input id="modal-name" type="text" maxlength="24" placeholder="e.g. Epic Battle" autocomplete="off"></div>
+    <div class="toggle-row">
+      <button class="toggle-btn active" id="toggle-public">Public</button>
+      <button class="toggle-btn" id="toggle-private">Private</button>
     </div>
-    <div class="modal-field">
-      <label>VISIBILITY</label>
-      <div class="toggle-row">
-        <button class="toggle-btn active" id="toggle-public">🌐 Public</button>
-        <button class="toggle-btn" id="toggle-private">🔒 Private</button>
-      </div>
-    </div>
-    <div class="modal-actions">
-      <button class="modal-submit" id="btn-modal-confirm">Start Room</button>
-      <button class="modal-cancel" id="btn-modal-cancel">Cancel</button>
+    <div class="pz-field" id="modal-pass-field" style="display:none;"><label>PASSWORD</label><input id="modal-password" type="text" maxlength="20" placeholder="Room password" autocomplete="off"></div>
+    <div class="pz-error-inline" id="create-error"></div>
+    <div class="pz-modal-btns">
+      <button class="pz-btn pz-btn-accent" style="flex:1;" id="btn-modal-confirm">Create</button>
+      <button class="pz-btn pz-btn-ghost" id="btn-modal-cancel">Cancel</button>
     </div>
   </div>
 </div>
@@ -290,6 +277,8 @@ const socket = io();
 const COLORS = ['#b450ff','#4488FF'];
 let myName = pongAuth ? (pongAuth.name || 'Player') : '';
 let myRoom = null, isMaster = false, isReady = false, roomIsPublic = true, pendingReady = false;
+let myRoomPassword = '';   // the private room password this player created/joined with (shown in the room view)
+function esc(t) { return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 document.getElementById('account-name').textContent = myName;
 
 function status(msg, type) { const el=document.getElementById('statusbar'); el.textContent=msg; el.className=type||''; }
@@ -300,14 +289,16 @@ function showDetail() { document.getElementById('list-view').style.display='none
 socket.on('connect', ()=>{ status('Connected','ok'); socket.emit('room:list'); });
 socket.on('disconnect', ()=>status('Disconnected','err'));
 socket.on('connect_error', (e)=>{ status('Cannot connect to server','err'); if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { try { sessionStorage.removeItem('pongmp_auth'); } catch (_) {} if (e.message) document.getElementById('login-gate-msg').textContent = e.message; document.getElementById('login-gate').style.display = 'flex'; } });
-socket.on('room:error', ({message})=>{ status(message,'err'); if(document.getElementById('join-modal').classList.contains('open')) document.getElementById('join-error').textContent=message; });
+socket.on('room:error', ({message})=>{ status(message,'err');
+  if(document.getElementById('join-modal').classList.contains('open')) document.getElementById('join-error').textContent=message;
+  if(document.getElementById('modal-overlay').classList.contains('open')) document.getElementById('create-error').textContent=message; });
 
 socket.on('room:list', ({rooms})=>renderRoomList(rooms));
 socket.on('room:open',   ()=>socket.emit('room:list'));
 socket.on('room:close',  ()=>socket.emit('room:list'));
 socket.on('room:update', ()=>socket.emit('room:list'));
 
-socket.on('room:created', ({room})=>{ myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
+socket.on('room:created', ({room})=>{ closeCreateModal(); myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
 socket.on('room:joined',  ({room,player})=>{ closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
 socket.on('room:state',   room=>{ myRoom=room; renderPlayers(room); updateActions(); });
 socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); status(player.name+' joined','ok'); });
@@ -322,8 +313,8 @@ function renderRoomList(rooms) {
   const empty=document.getElementById('rooms-empty');
   const heading=document.getElementById('list-heading');
   tbody.innerHTML='';
-  // Server only ever sends public (open) rooms here — private rooms are
-  // discoverable by code only, never shown in this list.
+  // Like Puz Royale: private rooms are listed with a PRIVATE badge; Join asks
+  // for their password (Join with Code popup, code filled in).
   empty.style.display=rooms.length?'none':'block';
   if(rooms.length===0) { heading.textContent='Start by creating a room:'; heading.className='empty'; }
   else if(rooms.length===1) { heading.textContent='You can join 1 room!'; heading.className=''; }
@@ -332,12 +323,14 @@ function renderRoomList(rooms) {
     const tr=document.createElement('tr');
     const full=r.players>=2;
     tr.innerHTML=`
-      <td class="room-name">${r.name}</td>
+      <td class="room-name">${esc(r.name)}${r.locked ? ' <span style="color:#FFB400;font-size:10px;letter-spacing:.5px;vertical-align:middle;">PRIVATE</span>' : ''}</td>
       <td class="room-players">${r.players} player${r.players!==1?'s':''}</td>
       <td class="room-enter">
         ${full
           ? '<button class="room-enter-btn spectate" disabled>In Game</button>'
-          : `<button class="room-enter-btn" onclick="joinRoom('${r.id}')">Join</button>`}
+          : r.locked
+            ? `<button class="room-enter-btn" onclick="openJoinModal('${esc(r.id)}', true)">Join</button>`
+            : `<button class="room-enter-btn" onclick="joinRoom('${esc(r.id)}')">Join</button>`}
       </td>`;
     tbody.appendChild(tr);
   });
@@ -351,6 +344,8 @@ function renderDetail(room) {
   document.getElementById('rh-name').textContent=room.name;
   document.getElementById('room-code-val').textContent=room.code;
   document.getElementById('room-code-wrap').style.display=(room.open===false)?'block':'none';
+  document.getElementById('room-code-pass').style.display=(room.locked && myRoomPassword)?'block':'none';
+  document.getElementById('room-code-pw').textContent=myRoomPassword;
   renderPlayers(room); updateActions();
 }
 
@@ -422,33 +417,65 @@ document.getElementById('btn-leave').onclick=()=>{
   showList(); status('Left room','');
 };
 
+function setRoomType(isPublic){
+  roomIsPublic=isPublic;
+  document.getElementById('toggle-public').classList.toggle('active', isPublic);
+  document.getElementById('toggle-private').classList.toggle('active', !isPublic);
+  document.getElementById('modal-pass-field').style.display=isPublic?'none':'block';
+  if(!isPublic) setTimeout(()=>document.getElementById('modal-password').focus(),50);
+}
 document.getElementById('btn-create').onclick=()=>{
-  if(!myName){status('Set your name first','err');return;}
-  document.getElementById('modal-name').value=myName+"'s Room";
+  document.getElementById('modal-name').value='';
+  document.getElementById('modal-password').value='';
+  document.getElementById('create-error').textContent='';
+  setRoomType(true);
+  closeJoinModal();
   document.getElementById('modal-overlay').classList.add('open');
   setTimeout(()=>document.getElementById('modal-name').focus(),50);
 };
-document.getElementById('btn-modal-cancel').onclick=()=>document.getElementById('modal-overlay').classList.remove('open');
+function closeCreateModal(){ document.getElementById('modal-overlay').classList.remove('open'); }
+document.getElementById('btn-modal-cancel').onclick=closeCreateModal;
+document.getElementById('modal-overlay').addEventListener('click',e=>{ if(e.target.id==='modal-overlay') closeCreateModal(); });
 document.getElementById('btn-modal-confirm').onclick=createRoom;
 document.getElementById('modal-name').addEventListener('keydown',e=>{ if(e.key==='Enter') createRoom(); });
+document.getElementById('modal-password').addEventListener('keydown',e=>{ if(e.key==='Enter') createRoom(); });
 function createRoom(){
   const name=document.getElementById('modal-name').value.trim();
-  if(!name) return;
-  socket.emit('room:create',{name,open:roomIsPublic});
-  document.getElementById('modal-overlay').classList.remove('open');
+  const password=roomIsPublic?'':document.getElementById('modal-password').value;
+  const err=document.getElementById('create-error');
+  if(!name){ err.textContent='Enter a room name'; return; }
+  if(!roomIsPublic && !password.trim()){ err.textContent='Enter a password for a private room'; return; }
+  err.textContent='';
+  myRoomPassword=password;
+  socket.emit('room:create',{name,open:roomIsPublic,password});
 }
 
-document.getElementById('toggle-public').onclick=()=>{ roomIsPublic=true; document.getElementById('toggle-public').classList.add('active'); document.getElementById('toggle-private').classList.remove('active'); };
-document.getElementById('toggle-private').onclick=()=>{ roomIsPublic=false; document.getElementById('toggle-private').classList.add('active'); document.getElementById('toggle-public').classList.remove('active'); };
+document.getElementById('toggle-public').onclick=()=>setRoomType(true);
+document.getElementById('toggle-private').onclick=()=>setRoomType(false);
 
 document.getElementById('btn-joincode').onclick=joinByCode;
 document.getElementById('code-input').addEventListener('keydown',e=>{ if(e.key==='Enter') joinByCode(); });
-function joinByCode(){ const code=document.getElementById('code-input').value.trim(); if(!/^\d{4}$/.test(code)){ document.getElementById('join-error').textContent='Enter the 4-digit room code'; return; } document.getElementById('join-error').textContent=''; socket.emit('room:join',{code}); }
+function joinByCode(){ const code=document.getElementById('code-input').value.trim(); const password=document.getElementById('join-password').value; if(!/^\d{4}$/.test(code)){ document.getElementById('join-error').textContent='Enter the 4-digit room code'; return; } document.getElementById('join-error').textContent=''; myRoomPassword=password; socket.emit('room:join',{code,password}); }
 // Join with Code popup (same behaviour as Puz Royale's: opens on the button,
 // closes on Cancel / backdrop / a successful join; errors show inside it).
-function openJoinModal(){ document.getElementById('code-input').value=''; document.getElementById('join-error').textContent=''; document.getElementById('join-modal').classList.add('open'); setTimeout(()=>document.getElementById('code-input').focus(),100); }
+// openJoinModal(code, true) = a private room clicked in the list: code filled in, asks for the password (as Puz).
+function openJoinModal(code, locked){
+  const pre=typeof code==='string'?code:'';
+  locked=!!locked && !!pre;
+  document.getElementById('join-title').textContent=locked?'JOIN PRIVATE ROOM':'JOIN WITH CODE';
+  document.getElementById('join-code-field').style.display=locked?'none':'block';
+  document.getElementById('join-pass-label').textContent=locked?'PASSWORD':'PASSWORD (PRIVATE ROOMS ONLY)';
+  document.getElementById('join-password').placeholder=locked?'Enter password':'Leave blank for public rooms';
+  document.getElementById('code-input').value=pre;
+  document.getElementById('join-password').value='';
+  document.getElementById('join-error').textContent='';
+  closeCreateModal();
+  document.getElementById('join-modal').classList.add('open');
+  setTimeout(()=>document.getElementById(locked?'join-password':'code-input').focus(),100);
+}
 function closeJoinModal(){ document.getElementById('join-modal').classList.remove('open'); }
-document.getElementById('btn-open-join').onclick=openJoinModal;
+document.getElementById('btn-open-join').onclick=()=>openJoinModal();
+document.getElementById('join-password').addEventListener('keydown',e=>{ if(e.key==='Enter') joinByCode(); });
 document.getElementById('btn-join-cancel').onclick=closeJoinModal;
 document.getElementById('join-modal').addEventListener('click',e=>{ if(e.target.id==='join-modal') closeJoinModal(); });
 
