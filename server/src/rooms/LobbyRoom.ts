@@ -16,10 +16,14 @@ interface LobbyRoomData {
   code: string;
   name: string;
   open: boolean;
+  password: string | null;   // private rooms: the host's password (never sent to clients)
   master: string;
   players: Record<string, PlayerData>;
   started: boolean;
 }
+
+const ROOM_NAME_MAX = 24;      // same as Puz Royale's room name field
+const ROOM_PASSWORD_MAX = 20;  // same as Puz Royale's password field
 
 function generateCode(rooms: Record<string, LobbyRoomData>): string {
   let code: string;
@@ -34,7 +38,7 @@ function serializePlayer(p: PlayerData) {
 
 function serializeRoom(r: LobbyRoomData) {
   return {
-    id: r.code, code: r.code, name: r.name, open: r.open,
+    id: r.code, code: r.code, name: r.name, open: r.open, locked: !!r.password,
     master: r.master, started: r.started,
     players: Object.values(r.players).map(serializePlayer)
   };
@@ -62,6 +66,13 @@ export class LobbyRoom extends Room {
 
     this.onMessage("room:create", (client: Client, data: any) => {
       const auth = client.auth as PongAuth;
+      // Same create rules as Puz Royale: the host names the room; a private
+      // room needs the host's password, and joining it needs that password.
+      const name = typeof data?.name === 'string' ? data.name.trim().slice(0, ROOM_NAME_MAX) : '';
+      if (!name) { client.send('room:error', { message: 'Enter a room name' }); return; }
+      const priv = data?.open === false;
+      const password = priv && typeof data?.password === 'string' ? data.password.slice(0, ROOM_PASSWORD_MAX) : '';
+      if (priv && !password.trim()) { client.send('room:error', { message: 'Enter a password for a private room' }); return; }
       const code = generateCode(this.lobbyRooms);
       const pd: PlayerData = {
         id: client.sessionId,
@@ -71,8 +82,8 @@ export class LobbyRoom extends Room {
         ready: false, master: true, paying: false
       };
       const room: LobbyRoomData = {
-        code, name: data.name || 'Room ' + code,
-        open: data.open !== false, master: client.sessionId,
+        code, name,
+        open: !priv, password: priv ? password : null, master: client.sessionId,
         players: { [client.sessionId]: pd }, started: false
       };
       this.lobbyRooms[code] = room;
@@ -121,6 +132,11 @@ export class LobbyRoom extends Room {
         this.sendToRoom(room, 'room:state', serializeRoom(room));
         this.broadcastList();
         return;
+      }
+
+      // Private room: the host's password (a player already seated rejoins above without it).
+      if (room.password && data?.password !== room.password) {
+        client.send('room:error', { message: data?.password ? 'Wrong password' : 'This room is private — enter its password' }); return;
       }
 
       const pd: PlayerData = {
@@ -267,9 +283,11 @@ export class LobbyRoom extends Room {
 
   private serializeList() {
     return Object.values(this.lobbyRooms)
-      .filter(r => !r.started && r.open)
+      // Like Puz Royale: private rooms are listed too, with a lock; joining
+      // one needs its password.
+      .filter(r => !r.started)
       .map(r => ({
-        id: r.code, name: r.name, open: r.open,
+        id: r.code, name: r.name, open: r.open, locked: !!r.password,
         players: Object.keys(r.players).length
       }));
   }
