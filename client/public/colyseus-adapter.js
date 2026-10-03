@@ -125,16 +125,27 @@
       return { client: client, opts: {} };
     }
 
+    var gameRejoinFails = 0;
     function reconnect() {
       if (!_roomId) return;
       var c = authedClient();
       c.client.joinById(_roomId, c.opts)
         .then(function (room) {
           _attempts++;
+          gameRejoinFails = 0;
           attach(room);
           fireMgr('reconnect', _attempts);
         })
-        .catch(function () { setTimeout(reconnect, 3000); });
+        .catch(function (e) {
+          // Game page: the match room no longer exists (both players gone, so it
+          // closed) → tell the page instead of retrying forever on a frozen board.
+          if (isGame) {
+            gameRejoinFails++;
+            var gone = e && (e.code === 522 || /not found|disposed|locked/i.test(e.message || ''));
+            if (gone || gameRejoinFails >= 10) { fire('match_gone'); return; }
+          }
+          setTimeout(reconnect, 3000);
+        });
     }
 
     // ── Lobby: reconnecting after a drop (phone in the background, network blip)
