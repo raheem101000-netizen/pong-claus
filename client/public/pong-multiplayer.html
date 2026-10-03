@@ -152,7 +152,6 @@ function myPaddleFrozen() { const e = myEffect(); return !!(e && e.type === 'fro
 // see the true outcome at once — a return only if your paddle was really there.
 const S_BALL_R = Math.round(Math.min(S_W, S_H) * 0.018);   // 7, matches server
 const S_FORGIVE = Math.round(S_W * 0.05);                  // 20
-const S_SPEED_MAX = Math.min(S_W, S_H) * 0.040;            // 16
 let seenTick = 0, lastStateAt = 0, shownTick = 0;
 let ballHist = [];                 // recent { tick, x, y } from the server
 let myReports = [], myXBefore = null;
@@ -185,7 +184,7 @@ function settleMine() {
   if (hit) {
     const len = myPaddleLenS();
     const rel = Math.max(-1, Math.min(1, (j.x - (viewX + len / 2)) / (len / 2)));
-    const spd = Math.min(Math.hypot(j.vx, j.vy) + 0.3, S_SPEED_MAX);
+    const spd = Math.hypot(j.vx, j.vy) + 0.3;   // matches the server: +0.3 per hit, no cap
     vx = Math.sin(rel * Math.PI / 4) * spd;
     vy = Math.cos(rel * Math.PI / 4) * spd * (myRole === 'p1' ? -1 : 1);
   }

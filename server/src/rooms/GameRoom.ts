@@ -11,6 +11,7 @@ const BALL_R       = Math.round(Math.min(W, H) * 0.018);
 const PADDLE_LONG  = Math.round(W * 0.28);
 const PADDLE_SHORT = Math.round(H * 0.018);
 const BALL_SPEED   = Math.min(W, H) * 0.022;
+// Used only by the Fire power-up's own cap (×1.3); rally hits have no cap.
 const SPEED_MAX    = Math.min(W, H) * 0.040;
 const FORGIVE      = Math.round(W * 0.05);
 // Hit judgement (see "Lag compensation" below): longest a crossing waits for
@@ -308,7 +309,7 @@ export class GameRoom extends Room {
     }
 
     // Sub-step so the ball never moves more than PADDLE_SHORT px per iteration.
-    // Guarantees crossed-check fires even at SPEED_MAX.
+    // Guarantees crossed-check fires at any speed (rally speed has no cap).
     const steps = Math.max(1, Math.ceil(Math.abs(b.vy) / PADDLE_SHORT));
     const sx = b.vx / steps;
     const sy = b.vy / steps;
@@ -414,7 +415,7 @@ export class GameRoom extends Room {
   private lateHit(key: 'p1' | 'p2', j: Judgement, paddleX: number, len: number, now: number) {
     const b = this.gs!.ball, isP1 = key === 'p1';
     const rel = Math.max(-1, Math.min(1, (j.x - (paddleX + len / 2)) / (len / 2)));
-    const spd = Math.min(Math.hypot(j.vx, j.vy) + 0.3, SPEED_MAX);
+    const spd = Math.hypot(j.vx, j.vy) + 0.3;   // same as hitPaddle: +0.3 per hit, no cap
     b.vx = Math.sin(rel * (Math.PI / 4)) * spd;
     b.vy = Math.cos(rel * (Math.PI / 4)) * spd * (isP1 ? -1 : 1);
     const k = this.ticksSince(j, now);
@@ -498,7 +499,7 @@ export class GameRoom extends Room {
 
     const rel = (b.x - (paddleX + len / 2)) / (len / 2);
     const clamped = Math.max(-1, Math.min(1, rel));
-    const spd = Math.min(Math.hypot(b.vx, b.vy) + 0.3, SPEED_MAX);
+    const spd = Math.hypot(b.vx, b.vy) + 0.3;   // +0.3 per paddle hit, no upper limit
     b.vx = Math.sin(clamped * (Math.PI / 4)) * spd;
     b.vy = Math.cos(clamped * (Math.PI / 4)) * spd * (isP1 ? -1 : 1);
     b.y = isP1 ? p.y - BALL_R - 1 : p.y + PADDLE_SHORT + BALL_R + 1;
