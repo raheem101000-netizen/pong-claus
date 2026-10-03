@@ -99,6 +99,11 @@ export class GameRoom extends Room {
   // been credited (a game_room hosts exactly one match).
   private allowedUserIds: number[] = [];
   private matchSettled = false;
+  // What a player who comes back after the match ended is shown (display
+  // only — the result and payout were already decided): the end-of-match
+  // message and, for the winner, the prize message.
+  private finalResult: any = null;
+  private creditResult: { userId: number; state: { status: string; amount?: string } } | null = null;
 
   static async onAuth(token: string, options: any) {
     return authenticateGameToken(token, options?.playerId);
@@ -132,6 +137,12 @@ export class GameRoom extends Room {
           code: this.roomId, role: idx === 0 ? 'p1' : 'p2',
           myName: name, paddlePos: idx === 0 ? 'BOTTOM' : 'TOP'
         });
+        // Back after the match was decided without them (e.g. away too long →
+        // walkover): show them the result instead of a frozen board.
+        if (this.finalResult) {
+          client.send('matchEnd', { ...this.finalResult, rejoined: true });
+          if (this.creditResult && this.creditResult.userId === auth.userId) client.send('pongmp:credit', this.creditResult.state);
+        }
         return;
       }
 
@@ -669,13 +680,16 @@ export class GameRoom extends Room {
     const s = this.gs!;
     const p1won = winner === 'p1';
     if (p1won) this.p1Wins++; else this.p2Wins++;
-    this.broadcast('matchEnd', {
+    this.finalResult = {
       winner,
       p1Score: s.p1.score,
       p2Score: s.p2.score,
       p1Wins: this.p1Wins, p2Wins: this.p2Wins,
       walkover,
-    });
+      p1Name: this.gameJoined[0]?.name || null,
+      p2Name: this.gameJoined[1]?.name || null,
+    };
+    this.broadcast('matchEnd', this.finalResult);
     this.gs = null;
 
     // Auto-credit replaces the old "$8 — claim by PayPal" flow: the winner's
@@ -704,6 +718,7 @@ export class GameRoom extends Room {
     }
     if (state.status === 'failed') console.error(`[pongmp-credit] GAVE UP — match ${this.roomId}, winner user ${winner.userId} is owed $5.00`);
     // winner.sessionId tracks the current session even across a reconnect.
+    this.creditResult = { userId: winner.userId, state };
     const winnerClient = this.clients.find(c => c.sessionId === winner.sessionId);
     winnerClient?.send('pongmp:credit', state);
   }

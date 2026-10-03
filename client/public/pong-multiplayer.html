@@ -213,6 +213,7 @@ function connect() {
     socket.emit('latency', { ms: halfRtt });
   });
   socket.on('disconnect', (reason) => console.log('[CLIENT] disconnected:', reason));
+  socket.on('match_gone', matchGone);
   socket.io.on('reconnect', (n) => {
     console.log('[CLIENT] reconnected after', n, 'attempts');
     const rc = currentRoomCode;
@@ -281,6 +282,14 @@ function connect() {
     document.getElementById('mr-credit').style.display = 'none';
     showMatchResult(iWon, data);
     if (data.walkover) document.getElementById('mr-score').textContent = iWon ? 'Your opponent left the match' : 'You left the match';
+    // We were away when the match was decided without us: say so plainly and
+    // take us back to the lobby (not a frozen board).
+    if (!iWon && data.walkover) {
+      const opp = (myRole === 'p1' ? data.p2Name : data.p1Name) || oppName || 'Your opponent';
+      document.getElementById('mr-change').textContent = 'MATCH OVER';
+      document.getElementById('mr-score').textContent = 'You were away too long. ' + opp + ' won.';
+      returnToLobbySoon();
+    }
     if (iWon) {
       document.getElementById('mr-credit').textContent = 'Adding your prize…';
       document.getElementById('mr-credit').style.display = 'block';
@@ -304,6 +313,31 @@ function connect() {
     }, 2500);
   });
   socket.on('error', ({ msg }) => showError(msg));
+}
+// After a match that ended without us: count down, then the lobby.
+let lobbyReturnTimer = null;
+function returnToLobbySoon(seconds) {
+  if (lobbyReturnTimer) return;
+  let n = seconds || 6;
+  const el = document.getElementById('mr-credit');
+  const tick = () => {
+    el.textContent = 'Back to the lobby in ' + n + '…';
+    el.style.color = 'rgba(255,255,255,0.55)';
+    el.style.display = 'block';
+    if (n-- <= 0) { clearInterval(lobbyReturnTimer); if (socket) socket.disconnect(); window.location.href = backToLobbyURL(); }
+  };
+  tick();
+  lobbyReturnTimer = setInterval(tick, 1000);
+}
+// The match room is gone (it closes once both players have left): the match
+// ended while we were away.
+function matchGone() {
+  gameRunning = false; gameState = null;
+  document.getElementById('mr-change').textContent = 'MATCH OVER';
+  document.getElementById('mr-change').style.color = '#FF4444';
+  document.getElementById('mr-score').textContent = 'You were away too long — the match ended without you.';
+  document.getElementById('match-result').style.display = 'flex';
+  returnToLobbySoon();
 }
 function backToLobbyURL() {
   return '/rooms.html?name=' + encodeURIComponent(myName);
