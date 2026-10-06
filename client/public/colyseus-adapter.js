@@ -26,6 +26,9 @@
 
   var HB_EVERY_MS = 5000;
   var HB_DEAD_MS = 15000;
+  // The SDK's own resume can hang on a connection that never answers; if we
+  // aren't back within this, rejoin with the account instead (as FIFA).
+  var RESUME_WATCHDOG_MS = 6000;
 
   var _sdkReady = false;
   var _sdkQueue = [];
@@ -139,6 +142,7 @@
         _connected = false;
         _dropAt = Date.now();
         fire('drop');
+        setTimeout(function () { if (gen === _gen && !_connected) abandon(); }, RESUME_WATCHDOG_MS);
       });
       if (room.onReconnect) room.onReconnect(function () {
         if (gen !== _gen) return;
@@ -252,7 +256,7 @@
         try { _room.send('hb'); } catch (e) {}
       } else if (_room && !_connected) {
         // Fast resume taking too long: fall back to account rejoin.
-        if (Date.now() - _dropAt > HB_DEAD_MS) abandon();
+        if (Date.now() - _dropAt > RESUME_WATCHDOG_MS) abandon();
       } else if (!_room && !_joining && _everConnected) {
         join();
       }
