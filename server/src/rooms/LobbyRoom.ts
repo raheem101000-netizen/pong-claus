@@ -22,6 +22,11 @@ const SWEEP_MS        = 2_000;
 const LOBBY_RECONNECT_SECONDS = Number(process.env.LOBBY_RECONNECT_SECONDS) || SEAT_HOLD_MS / 1000;
 // Pong is 1v1: a room seats 2 distinct accounts.
 const SEATS_PER_ROOM = 2;
+// Rematch: a pending rematch is cancelled when one of its two players is
+// away this long (closed the tab instead of accepting) — that player is
+// treated as having left the room.
+const REMATCH_CANCEL_MS = Number(process.env.PONG_REMATCH_CANCEL_MS) || 30_000;
+const CHAT_HISTORY_MAX = 100;
 
 interface PlayerData {
   id: string;        // the connection currently (or last) holding this seat
@@ -45,6 +50,11 @@ interface LobbyRoomData {
   players: Record<number, PlayerData>; // by account
   started: boolean;
   kicked: Set<number>;       // accounts the host removed; they can't rejoin this room
+  chat: { player: string; content: string }[]; // kept for the room's life, across matches and rematches
+  matchId: string | null;    // the game_room launched from this room (while started)
+  // Rematch pressed by one player, waiting for the other. Only both presses
+  // reset the room for a new match; one press changes nothing else.
+  rematch: { by: Set<number> } | null;
 }
 
 const ROOM_NAME_MAX = 24;      // same as Puz Royale's room name field
@@ -62,10 +72,17 @@ function serializePlayer(p: PlayerData) {
 }
 
 function serializeRoom(r: LobbyRoomData) {
+  const players = Object.values(r.players);
   return {
     id: r.code, code: r.code, name: r.name, open: r.open, locked: !!r.password,
     master: r.players[r.master]?.id ?? null, started: r.started,
-    players: Object.values(r.players).map(serializePlayer)
+    players: players.map(serializePlayer),
+    rematch: r.rematch ? {
+      pending: true,
+      by: players.filter(p => r.rematch!.by.has(p.userId)).map(p => p.id),
+      names: players.filter(p => r.rematch!.by.has(p.userId)).map(p => p.name),
+      waiting: players.filter(p => !r.rematch!.by.has(p.userId)).map(p => p.name),
+    } : null,
   };
 }
 
@@ -139,11 +156,12 @@ export class LobbyRoom extends Room {
       const room: LobbyRoomData = {
         code, name,
         open: !priv, password: priv ? password : null, master: auth.userId,
-        players: { [auth.userId]: pd }, started: false, kicked: new Set<number>()
+        players: { [auth.userId]: pd }, started: false, kicked: new Set<number>(),
+        chat: [], matchId: null, rematch: null
       };
       this.lobbyRooms[code] = room;
       this.bindSeat(client, room, pd);
-      client.send('room:created', { room: serializeRoom(room), player: serializePlayer(pd) });
+      client.send('room:created', { room: serializeRoom(room), player: serializePlayer(pd), chat: room.chat });
       this.broadcastList();
     });
 
@@ -186,7 +204,7 @@ export class LobbyRoom extends Room {
       if (Object.keys(room.players).length === 0) { pd.master = true; room.master = auth.userId; }
       room.players[auth.userId] = pd;
       this.bindSeat(client, room, pd);
-      client.send('room:joined', { room: serializeRoom(room), player: serializePlayer(pd) });
+      client.send('room:joined', { room: serializeRoom(room), player: serializePlayer(pd), chat: room.chat });
       this.sendToRoom(room, 'room:player:join', { player: serializePlayer(pd) });
       this.sendToRoom(room, 'room:state', serializeRoom(room));
       this.broadcastList();
@@ -195,6 +213,7 @@ export class LobbyRoom extends Room {
     this.onMessage("room:ready", (client: Client) => {
       const seat = this.seatOf(client);
       if (!seat) return;
+      if (seat.room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
       seat.pd.ready = true;
       this.sendToRoom(seat.room, 'room:player:ready', { player: serializePlayer(seat.pd) });
       this.sendToRoom(seat.room, 'room:state', serializeRoom(seat.room));
@@ -205,6 +224,7 @@ export class LobbyRoom extends Room {
       if (!seat) return;
       const { room } = seat;
       if (room.started || room.master !== seat.pd.userId) return;
+      if (room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
       const players = Object.values(room.players);
       // Pong is 1v1: a match needs its 2 players, and the non-host player must
       // have pressed Ready (the host starts instead of readying). No payment.
@@ -218,9 +238,12 @@ export class LobbyRoom extends Room {
 
       room.started = true; // no second launch while the match room is being created
       try {
+        // A new game_room per match (rematches included): its room id is the
+        // match's credit key ('pongmp:<roomId>'), so each match pays once.
         const gameRoom = await matchMaker.createRoom("game_room", {
           launchTicket: issueLaunchTicket(), // proves this match came from a lobby, not a client
           allowedUserIds: players.map(p => p.userId),
+          lobbyRoomId: this.roomId,          // for the rematch handshake
         });
         this.sendToRoom(room, 'room:game:start', {
           code: gameRoom.roomId,
@@ -228,13 +251,15 @@ export class LobbyRoom extends Room {
         });
         // The seats now live in the match room (account-owned there too). A
         // page that reloads into the lobby is sent back to the match while it's
-        // still being played (room:rejoin → room:match).
+        // still being played (room:rejoin → room:match). The room itself (its
+        // players and chat) is kept, hidden from the list, for a rematch; it's
+        // dropped when the match room closes without one.
+        room.matchId = gameRoom.roomId;
         for (const p of players) {
           this.userMatch.set(p.userId, gameRoom.roomId);
           if (this.clientRoom.get(p.id) === room.code) this.clientRoom.delete(p.id);
           if (this.userRoom.get(p.userId) === room.code) this.userRoom.delete(p.userId);
         }
-        delete this.lobbyRooms[room.code];
         this.broadcastList();
       } catch (e) {
         room.started = false;
@@ -261,7 +286,16 @@ export class LobbyRoom extends Room {
     this.onMessage("room:talk", (client: Client, data: any) => {
       const seat = this.seatOf(client);
       if (!seat) return;
-      this.sendToRoom(seat.room, 'room:talk', { player: seat.pd.name || 'Unknown', content: data.content || '' });
+      const msg = { player: seat.pd.name || 'Unknown', content: String(data?.content || '').slice(0, 200) };
+      seat.room.chat.push(msg);
+      if (seat.room.chat.length > CHAT_HISTORY_MAX) seat.room.chat.splice(0, seat.room.chat.length - CHAT_HISTORY_MAX);
+      this.sendToRoom(seat.room, 'room:talk', msg);
+    });
+
+    // The second player accepting a pending rematch (from the room's chat).
+    this.onMessage("room:rematch", (client: Client) => {
+      const seat = this.seatOf(client);
+      if (seat && seat.room.rematch) this.addRematchPress(seat.room, seat.pd.userId);
     });
 
     // The only way to give a seat up yourself.
@@ -382,6 +416,10 @@ export class LobbyRoom extends Room {
     const code = room.code;
 
     this.sendToRoom(room, 'room:player:leave', { id: pd.id });
+    if (room.rematch) {
+      room.rematch = null;
+      this.sendToRoom(room, 'room:rematch', { cancelled: pd.name + ' left — rematch cancelled.' });
+    }
 
     if (Object.keys(room.players).length === 0) {
       if (!room.started) {
@@ -431,6 +469,16 @@ export class LobbyRoom extends Room {
         }
       }
       if (!this.lobbyRooms[room.code]) continue;
+      if (room.rematch) {
+        const gone = Object.values(room.players).find(p => p.away && now - p.awaySince > REMATCH_CANCEL_MS);
+        if (gone) {
+          console.log(`[lobby] rematch in room ${room.code} cancelled: account ${gone.userId} away`);
+          this.clients.find(c => c.sessionId === gone.id)?.send('room:released', { message: 'You were away — the rematch was cancelled.' });
+          this.releaseSeat(room, gone.userId); // tells the other player and cancels
+          changed = false;
+          if (!this.lobbyRooms[room.code]) continue;
+        }
+      }
       const host = room.players[room.master];
       if (host && host.away && now - host.awaySince > HOST_HANDOFF_MS) {
         const next = Object.values(room.players).find(p => !p.away);
@@ -438,6 +486,63 @@ export class LobbyRoom extends Room {
       }
       if (changed) this.sendToRoom(room, 'room:state', serializeRoom(room));
     }
+  }
+
+  // ── Rematch (called by the game_room through matchMaker.remoteRoomCall) ──
+
+  // A player pressed Rematch on the match-over screen. First press: the room
+  // the match was launched from comes back (same players, same chat) with the
+  // rematch pending; both players' pages are sent to it. Later presses count
+  // towards acceptance. Nothing is reset until both have pressed.
+  public requestRematch(matchId: string, userId: number): { ok: boolean; error?: string } {
+    const room = Object.values(this.lobbyRooms).find(r => r.matchId === matchId)
+      || Object.values(this.lobbyRooms).find(r => r.rematch && r.players[userId]);
+    if (!room || !room.players[userId]) return { ok: false, error: 'This room has closed — create a new one.' };
+    if (room.rematch) { this.addRematchPress(room, userId); return { ok: true }; }
+    if (!room.started) return { ok: false, error: 'This room has closed — create a new one.' };
+    const players = Object.values(room.players);
+    const elsewhere = players.find(p => { const c = this.userRoom.get(p.userId); return !!c && c !== room.code; });
+    if (elsewhere) return { ok: false, error: elsewhere.name + ' has already joined another room.' };
+
+    const now = Date.now();
+    room.started = false;
+    room.matchId = null;
+    room.rematch = { by: new Set([userId]) };
+    for (const p of players) {
+      this.userMatch.delete(p.userId);
+      this.userRoom.set(p.userId, room.code);
+      // Grace to get from the match page back to the room.
+      p.connected = true; p.lastSeen = now; p.away = false; p.awaySince = 0;
+    }
+    console.log(`[lobby] rematch requested in room ${room.code} by account ${userId}`);
+    // A player already on the room list (not in a room) is brought in now.
+    for (const p of players) {
+      const c = this.clients.find(cl => (cl.auth as PongAuth)?.userId === p.userId && !this.clientRoom.has(cl.sessionId));
+      if (c) this.takeOver(c, room);
+    }
+    this.broadcastList();
+    return { ok: true };
+  }
+
+  // The match room closed: if no rematch was asked for, the room goes.
+  public matchClosed(matchId: string) {
+    const room = Object.values(this.lobbyRooms).find(r => r.matchId === matchId && r.started);
+    if (room) delete this.lobbyRooms[room.code];
+  }
+
+  private addRematchPress(room: LobbyRoomData, userId: number) {
+    if (!room.rematch || !room.players[userId]) return;
+    room.rematch.by.add(userId);
+    const players = Object.values(room.players);
+    if (players.length === SEATS_PER_ROOM && players.every(p => room.rematch!.by.has(p.userId))) {
+      // Both pressed: back to the pre-start state — nobody ready; the normal
+      // Ready → Start flow runs again for a brand-new match.
+      room.rematch = null;
+      for (const p of players) p.ready = false;
+      console.log(`[lobby] rematch accepted in room ${room.code}`);
+      this.sendToRoom(room, 'room:rematch', { accepted: true });
+    }
+    this.sendToRoom(room, 'room:state', serializeRoom(room));
   }
 
   // The match this account was launched into, if it's still being played.

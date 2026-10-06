@@ -1,4 +1,4 @@
-import { Room, Client } from "@colyseus/core";
+import { Room, Client, matchMaker } from "@colyseus/core";
 import { authenticateGameToken, PongAuth } from "../auth";
 import { consumeLaunchTicket } from "../launchTickets";
 import { creditPongWin } from "../payouts";
@@ -130,6 +130,8 @@ export class GameRoom extends Room {
   private creditResult: { userId: number; state: { status: string; amount?: string } } | null = null;
   // Play was stopped because both players were gone (no one to award).
   private abandoned = false;
+  // The lobby this match was launched from (rematch handshake).
+  private lobbyRoomId: string | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private lastPresentAt = Date.now();
   private createdAt = Date.now();
@@ -150,6 +152,7 @@ export class GameRoom extends Room {
       throw new Error("A match needs exactly two different players");
     }
     this.allowedUserIds = ids;
+    this.lobbyRoomId = typeof options?.lobbyRoomId === 'string' ? options.lobbyRoomId : null;
     this.setMetadata({ over: false });
     this.sweepTimer = setInterval(() => this.sweep(), SWEEP_MS);
 
@@ -187,6 +190,7 @@ export class GameRoom extends Room {
         if (this.finalResult) {
           client.send('matchEnd', { ...this.finalResult, rejoined: true });
           if (this.creditResult && this.creditResult.userId === auth.userId) client.send('pongmp:credit', this.creditResult.state);
+          if (this.rematchAvailable()) client.send('rematch:available', {});
         } else if (this.abandoned) {
           client.send('opponentLeft');
         }
@@ -238,6 +242,22 @@ export class GameRoom extends Room {
 
     // Presence heartbeat (~5 s): answered so the page can spot a dead
     // connection, and keeps this account's seat present.
+    // Rematch (match-over screen): only once the match is decided AND its
+    // credit has finished. The lobby runs the two-press handshake; a rematch
+    // is a new game_room, so it has its own 'pongmp:<roomId>' credit key and
+    // can never re-pay this match.
+    this.onMessage("rematch", async (client: Client) => {
+      const slot = this.gameJoined.find(p => p.sessionId === client.sessionId);
+      if (!slot || !this.rematchAvailable() || !this.lobbyRoomId) return;
+      try {
+        const out: any = await matchMaker.remoteRoomCall(this.lobbyRoomId, 'requestRematch' as any, [this.roomId, slot.userId]);
+        if (out && out.ok) this.broadcast('rematch:go', { byName: slot.name });
+        else client.send('rematch:error', { message: out?.error || 'Rematch not possible right now' });
+      } catch (e) {
+        client.send('rematch:error', { message: 'Rematch not possible right now' });
+      }
+    });
+
     this.onMessage("hb", (client: Client) => {
       client.send("hb");
       const slot = this.gameJoined.find(p => p.sessionId === client.sessionId);
@@ -290,6 +310,11 @@ export class GameRoom extends Room {
   onDispose() {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.gameInterval) clearInterval(this.gameInterval);
+    if (this.lobbyRoomId) matchMaker.remoteRoomCall(this.lobbyRoomId, 'matchClosed' as any, [this.roomId]).catch(() => {});
+  }
+
+  private rematchAvailable() {
+    return !!this.finalResult && !!this.creditResult && !this.abandoned;
   }
 
   private markGone(slot: PlayerSlot) {
@@ -845,5 +870,7 @@ export class GameRoom extends Room {
     this.creditResult = { userId: winner.userId, state };
     const winnerClient = this.clients.find(c => c.sessionId === winner.sessionId);
     winnerClient?.send('pongmp:credit', state);
+    // Decided and paid: both players may now ask for a rematch.
+    this.broadcast('rematch:available', {});
   }
 }
