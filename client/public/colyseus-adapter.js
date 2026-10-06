@@ -2,6 +2,20 @@
  * Loaded by rooms.html and pong-multiplayer.html in place of socket.io CDN.
  * Detects context from URL: pong-multiplayer path → joins game_room by URL code.
  * Everything else → joins persistent lobby_room.
+ *
+ * Reconnection (same model as FIFA / Kurver — seats belong to the account):
+ *   1. fast resume: the SDK resumes the SAME session with its reconnection token;
+ *   2. account rejoin: otherwise a fresh connection is opened and the page asks
+ *      for its account's seat back ('connect' fires again — the lobby page sends
+ *      room:rejoin, the game page joinRoom), which the server hands over.
+ * A heartbeat ('hb' every 5 s, answered by the server) is the presence signal
+ * and also spots a dead connection the browser never reported (phone asleep,
+ * network switch, Safari bfcache): no answer for 15 s → reconnect.
+ *
+ * Events for the page: 'connect' (every new connection), 'resume' (same session
+ * back), 'drop' (connection lost, reconnecting), 'superseded' (this seat was
+ * opened in another tab/device — no more reconnecting), 'match_gone',
+ * 'connect_error'.
  */
 (function () {
   'use strict';
@@ -9,6 +23,9 @@
   var isGame = location.pathname.indexOf('pong-multiplayer') !== -1;
   var roomCodeFromURL = new URLSearchParams(location.search).get('room');
   var serverURL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host;
+
+  var HB_EVERY_MS = 5000;
+  var HB_DEAD_MS = 15000;
 
   var _sdkReady = false;
   var _sdkQueue = [];
@@ -29,14 +46,32 @@
   };
   document.head.appendChild(script);
 
+  // tenten.run login, stored by the lobby from the handoff. Kept on the device
+  // (localStorage) so a reload, a new tab or a page restored from bfcache stays
+  // logged in; the server still bounds the token's age.
+  window.pongmpAuth = function () {
+    var raw = null;
+    try { raw = localStorage.getItem('pongmp_auth'); } catch (e) {}
+    if (!raw) { try { raw = sessionStorage.getItem('pongmp_auth'); } catch (e) {} }
+    try { return JSON.parse(raw) || null; } catch (e) { return null; }
+  };
+
   window.io = function () {
     var handlers = {};
     var mgr = {};
     var pending = [];
     var _room = null;
-    var _roomId = null;
+    var _roomId = isGame ? roomCodeFromURL : null;
     var _connected = false;
     var _attempts = 0;
+    var _gen = 0;              // which connection is current (older ones are ignored)
+    var _stopped = false;      // left on purpose or superseded: no reconnecting
+    var _superseded = false;
+    var _dropAt = 0;           // when the SDK's fast resume started
+    var _joining = false;
+    var _retryTimer = null;
+    var _lastAck = 0;
+    var _everConnected = false;
 
     var socket = {
       get connected() { return _connected; },
@@ -60,7 +95,9 @@
         }
       },
       disconnect: function () {
-        if (_room) { _room.leave(true); _room = null; }
+        _stopped = true;
+        clearTimeout(_retryTimer);
+        if (_room) { try { _room.leave(true); } catch (e) {} _room = null; }
         _connected = false;
       }
     };
@@ -80,135 +117,169 @@
     }
 
     function attach(room) {
+      var gen = ++_gen;
       _room = room;
       _roomId = room.roomId;
       _connected = true;
+      _lastAck = Date.now();
       socket.id = room.sessionId;
 
-      room.onMessage('*', function (type, msg) { fire(type, msg); });
+      room.onMessage('*', function (type, msg) {
+        if (gen !== _gen) return;
+        if (type === 'hb') { _lastAck = Date.now(); return; }
+        if (type === 'superseded' || type === 'room:superseded') onSuperseded(type, msg);
+        fire(type, msg);
+      });
+
+      // Fast resume: the SDK's own retries with the reconnection token
+      // (the server holds the session for that).
+      if (room.reconnection) room.reconnection.maxRetries = 6;
+      if (room.onDrop) room.onDrop(function () {
+        if (gen !== _gen) return;
+        _connected = false;
+        _dropAt = Date.now();
+        fire('drop');
+      });
+      if (room.onReconnect) room.onReconnect(function () {
+        if (gen !== _gen) return;
+        _connected = true;
+        _lastAck = Date.now();
+        flush();
+        fire('resume');
+        beat();
+      });
 
       room.onLeave(function (code) {
+        if (gen !== _gen) return;
         _connected = false;
+        _room = null;
         fire('disconnect', 'transport close');
-        if (code === 1000) return;
-        // Lobby: resume the SAME session (the server holds the seat for 12
-        // minutes). The game page keeps its own rejoin below.
-        if (!isGame) { resumeLobby(room.reconnectionToken); return; }
-        setTimeout(reconnect, 1500);
+        if (_stopped || code === 1000) return;
+        // Resume wasn't possible (session gone, retries used up, server
+        // closed us): account rejoin on a fresh connection.
+        fire('drop');
+        scheduleRejoin(1000);
       });
-      if (!isGame) {
-        // The SDK's own quick retries run only ~3 s; then resumeLobby takes
-        // over (it also learns at once when the seat has expired).
-        if (room.reconnection) room.reconnection.maxRetries = 4;
-        if (room.onDrop) room.onDrop(function () { fire('drop'); });
-        if (room.onReconnect) room.onReconnect(function () { fire('resume'); });
-      }
 
       room.onError(function (code, msg) {
         console.error('[colyseus-adapter] room error', code, msg);
       });
 
-      var q = pending.splice(0);
-      for (var i = 0; i < q.length; i++) { room.send(q[i].ev, q[i].data); }
-
+      flush();
       fire('connect');
+      if (_everConnected) fireMgr('reconnect', ++_attempts);
+      _everConnected = true;
+      beat();
     }
 
-    // tenten.run login (stored by the lobby from the handoff): the server's
-    // onAuth turns this token into the player's real account.
+    function flush() {
+      var q = pending.splice(0);
+      for (var i = 0; i < q.length; i++) { _room.send(q[i].ev, q[i].data); }
+    }
+
+    // The game page's seat moved to another tab/device: stop here. (The lobby
+    // connection stays — only its seat moved — so the room list keeps working.)
+    function onSuperseded(type) {
+      if (type !== 'superseded') return;
+      _stopped = true;
+      _superseded = true;
+      clearTimeout(_retryTimer);
+    }
+
     function authedClient() {
       var client = new Colyseus.Client(serverURL);
-      try {
-        var a = JSON.parse(sessionStorage.getItem('pongmp_auth'));
-        if (a && a.token) { client.auth.token = a.token; return { client: client, opts: { playerId: a.playerId } }; }
-      } catch (e) {}
+      var a = window.pongmpAuth();
+      if (a && a.token) { client.auth.token = a.token; return { client: client, opts: { playerId: a.playerId } }; }
       return { client: client, opts: {} };
     }
 
-    var gameRejoinFails = 0;
-    function reconnect() {
-      if (!_roomId) return;
+    // Open a fresh connection (first load, or account rejoin after a failed resume).
+    function join() {
+      if (_stopped || _joining) return;
+      _joining = true;
+      clearTimeout(_retryTimer);
       var c = authedClient();
-      c.client.joinById(_roomId, c.opts)
-        .then(function (room) {
-          _attempts++;
-          gameRejoinFails = 0;
-          attach(room);
-          fireMgr('reconnect', _attempts);
-        })
-        .catch(function (e) {
-          // Game page: the match room no longer exists (both players gone, so it
-          // closed) → tell the page instead of retrying forever on a frozen board.
-          if (isGame) {
-            gameRejoinFails++;
-            var gone = e && (e.code === 522 || /not found|disposed|locked/i.test(e.message || ''));
-            if (gone || gameRejoinFails >= 10) { fire('match_gone'); return; }
-          }
-          setTimeout(reconnect, 3000);
-        });
-    }
-
-    // ── Lobby: reconnecting after a drop (phone in the background, network blip)
-    // The SDK retries on its own for about a minute; after that we keep trying
-    // to resume the SAME lobby session — every few seconds and as soon as the
-    // tab is back in front — for up to 12 minutes (the server holds the seat
-    // that long). If the seat/room is gone: 'connection_lost', then a fresh
-    // lobby session so the room list keeps working.
-    var LOBBY_RECONNECT_MS = 12 * 60 * 1000;
-    var resume = null;
-    function resumeLobby(token) {
-      if (!token) { lobbyLost(); return; }
-      resume = { token: token, until: Date.now() + LOBBY_RECONNECT_MS, busy: false, timer: null };
-      fire('drop');
-      tryResume();
-    }
-    function tryResume() {
-      var r = resume;
-      if (!r || r.busy) return;
-      if (Date.now() > r.until) { lobbyLost(); return; }
-      r.busy = true;
-      authedClient().client.reconnect(r.token).then(function (room) {
-        if (resume !== r) { try { room.leave(); } catch (e) {} return; }
-        resume = null;
-        _attempts++;
-        attach(room);
-        fire('resume');
-        fireMgr('reconnect', _attempts);
-      }).catch(function (e) {
-        r.busy = false;
-        // Seat/room gone (522/524 also arrive message-less through Cloudflare).
-        if (e && (e.code === 522 || e.code === 524 || /expired|not found|invalid/i.test(e.message || ''))) { lobbyLost(); return; }
-        r.timer = setTimeout(tryResume, 5000);
-      });
-    }
-    function lobbyLost() {
-      if (resume) clearTimeout(resume.timer);
-      resume = null;
-      fire('connection_lost');
-      reconnect();
-    }
-    if (!isGame) {
-      // Closing or leaving the page is a real leave (frees the seat now), unlike
-      // a phone switching apps, which only hides the page and keeps the hold.
-      window.addEventListener('pagehide', function () { if (_room) { try { _room.leave(true); } catch (e) {} } });
-      document.addEventListener('visibilitychange', function () { if (!document.hidden && resume) { clearTimeout(resume.timer); tryResume(); } });
-      window.addEventListener('online', function () { if (resume) { clearTimeout(resume.timer); tryResume(); } });
-    }
-
-    whenReady(function () {
-      var c = authedClient(), client = c.client;
-      var promise;
+      var p;
       if (isGame) {
         // Matches are only ever started from the lobby (the server refuses a
         // client-created game_room).
-        promise = roomCodeFromURL
-          ? client.joinById(roomCodeFromURL, c.opts)
-          : Promise.reject(new Error('Matches can only be started from the lobby'));
+        p = _roomId ? c.client.joinById(_roomId, c.opts) : Promise.reject(new Error('Matches can only be started from the lobby'));
       } else {
-        promise = client.joinOrCreate('lobby_room', c.opts);
+        p = c.client.joinOrCreate('lobby_room', c.opts);
       }
-      promise.then(attach).catch(function (e) { fire('connect_error', e); });
+      p.then(function (room) {
+        _joining = false;
+        if (_stopped) { try { room.leave(true); } catch (e) {} return; }
+        attach(room);
+      }).catch(function (e) {
+        _joining = false;
+        if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { fire('connect_error', e); return; }
+        // Game page: the match room no longer exists (no seat held for a long
+        // time, so it closed) → tell the page instead of a frozen board.
+        if (isGame && e && (e.code === 522 || e.code === 4212 || /not found|disposed|locked|not a player/i.test(e.message || ''))) { fire('match_gone'); return; }
+        if (!_everConnected) fire('connect_error', e);
+        scheduleRejoin(3000);
+      });
+    }
+
+    // Give up on the current connection (dead, or stuck resuming) without
+    // triggering the SDK's own reconnection, and rejoin with the account.
+    function abandon() {
+      var old = _room;
+      _gen++; _room = null; _connected = false;
+      if (old) { try { old.connection.close(1000); } catch (e) {} }
+      fire('drop');
+      join();
+    }
+
+    function scheduleRejoin(ms) {
+      if (_stopped) return;
+      clearTimeout(_retryTimer);
+      _retryTimer = setTimeout(join, ms);
+    }
+
+    // Heartbeat: presence for the server, and a dead-connection check for us.
+    function beat() {
+      if (_stopped) return;
+      if (_room && _connected) {
+        if (Date.now() - _lastAck > HB_DEAD_MS) {
+          // The connection is dead even though the browser never said so:
+          // drop it and rejoin with the account.
+          console.info('[colyseus-adapter] no answer from the server — reconnecting');
+          abandon();
+          return;
+        }
+        try { _room.send('hb'); } catch (e) {}
+      } else if (_room && !_connected) {
+        // Fast resume taking too long: fall back to account rejoin.
+        if (Date.now() - _dropAt > HB_DEAD_MS) abandon();
+      } else if (!_room && !_joining && _everConnected) {
+        join();
+      }
+    }
+    setInterval(beat, HB_EVERY_MS);
+
+    // Back in front / back online / restored from bfcache: check at once.
+    function wake() {
+      if (_stopped || document.visibilityState === 'hidden') return;
+      if (_room) { beat(); return; }   // connected, or the SDK is resuming
+      if (!_joining) { clearTimeout(_retryTimer); join(); }
+    }
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('online', wake);
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) {
+        // A page restored from bfcache: its old connection is dead — rejoin.
+        if (_superseded) return;
+        _stopped = false;
+        abandon();
+      }
     });
+    // Leaving the page is NOT a leave: the seat stays with the account (so a
+    // reload, bfcache or a quick app switch comes straight back to it). Only
+    // the room's Leave button gives a seat up.
+
+    whenReady(join);
 
     return socket;
   };

@@ -266,19 +266,20 @@ const FREE_PLAY = true;
 // Same pattern as FIFA / Puz Royale / Kurver: tenten.run's Pong MULTIPLAYER
 // button issues a game_tokens token and redirects here with
 // #token=…&player_id=…&name=… (a fragment — never sent to the server). It's
-// kept in sessionStorage for this tab (the game page reads it too), stripped
-// from the address bar, and sent on every Colyseus join by the adapter; the
-// server's onAuth turns it into the real user_id. No token → login gate.
+// kept on this device (localStorage, so a reload, new tab or bfcache stays
+// logged in; the game page reads it too), stripped from the address bar, and
+// sent on every Colyseus join by the adapter; the server's onAuth turns it
+// into the real user_id. No token → login gate.
 (function(){
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.get('token') && h.get('player_id')) {
-    const a = { token: h.get('token'), playerId: Number(h.get('player_id')), name: h.get('name') || '' };
-    try { sessionStorage.setItem('pongmp_auth', JSON.stringify(a)); } catch (_) {}
+    const a = JSON.stringify({ token: h.get('token'), playerId: Number(h.get('player_id')), name: h.get('name') || '' });
+    try { localStorage.setItem('pongmp_auth', a); } catch (_) {}
+    try { sessionStorage.setItem('pongmp_auth', a); } catch (_) {}
     history.replaceState(null, '', location.pathname + location.search);
   }
 })();
-let pongAuth = null;
-try { pongAuth = JSON.parse(sessionStorage.getItem('pongmp_auth')) || null; } catch (_) {}
+let pongAuth = window.pongmpAuth();
 if (!pongAuth) document.getElementById('login-gate').style.display = 'flex';
 
 const socket = io();
@@ -294,15 +295,41 @@ function showList() { document.getElementById('list-view').style.display='block'
 function showDetail() { document.getElementById('list-view').style.display='none'; document.getElementById('room-detail').style.display='block'; }
 
 
-socket.on('connect', ()=>{ status('Connected','ok'); socket.emit('room:list'); });
-socket.on('disconnect', ()=>status('Disconnected','err'));
-// Connection dropped → reconnecting (the server holds our seat for 12 minutes);
-// if the room is gone, say so and go back to the room list (no dead room on screen).
+// ── Seat & reconnection (same model as FIFA / Kurver) ───────────────────────
+// Our seat belongs to our account. On every new connection (first load,
+// reload, new tab, bfcache, or after a lost connection) we ask the server for
+// it back (room:rejoin); it hands over the same seat, ready state and host
+// role — or sends us to our match if it's still being played. The room is
+// remembered on this device only to say what's happening while we rejoin.
+// A tab whose seat was opened somewhere else stays on the room list.
+const ROOM_KEY = 'pongmp_room', SUPERSEDED_KEY = 'pongmp_superseded';
+function remember(code){ try { if (code) localStorage.setItem(ROOM_KEY, code); else localStorage.removeItem(ROOM_KEY); } catch (_) {} }
+function remembered(){ try { return localStorage.getItem(ROOM_KEY); } catch (_) { return null; } }
+function isSuperseded(){ try { return sessionStorage.getItem(SUPERSEDED_KEY) === '1'; } catch (_) { return false; } }
+function setSuperseded(on){ try { if (on) sessionStorage.setItem(SUPERSEDED_KEY, '1'); else sessionStorage.removeItem(SUPERSEDED_KEY); } catch (_) {} }
 function setConnNotice(t){ const el=document.getElementById('conn-notice'); el.textContent=t||''; el.style.display=t?'block':'none'; }
-socket.on('drop', ()=>setConnNotice('Connection lost — reconnecting…'));
+function backToList(){ myRoom=null; isMaster=false; isReady=false; showList(); socket.emit('room:list'); }
+socket.on('connect', ()=>{
+  status('Connected','ok'); socket.emit('room:list');
+  if (!isSuperseded()) {
+    if (myRoom || remembered()) setConnNotice('Rejoining your room…');
+    socket.emit('room:rejoin', { code: (myRoom && myRoom.code) || remembered() });
+  }
+});
+socket.on('disconnect', ()=>status('Disconnected','err'));
+socket.on('drop', ()=>{ status('Reconnecting…','err'); setConnNotice(myRoom ? 'Connection lost — reconnecting. Your seat is kept.' : 'Connection lost — reconnecting…'); });
 socket.on('resume', ()=>{ setConnNotice(''); status('Reconnected','ok'); });
-socket.on('connection_lost', ()=>{ if(myRoom){ myRoom=null; isMaster=false; isReady=false; showList(); } setConnNotice('Connection lost — your room may have closed. Rejoin with its code, or create a new one.'); });
-socket.on('connect_error', (e)=>{ status('Cannot connect to server','err'); if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { try { sessionStorage.removeItem('pongmp_auth'); } catch (_) {} if (e.message) document.getElementById('login-gate-msg').textContent = e.message; document.getElementById('login-gate').style.display = 'flex'; } });
+socket.on('room:rejoin:none', ()=>{
+  const had = myRoom || remembered();
+  remember(null); setConnNotice('');
+  if (myRoom) backToList();
+  if (had) status('Your room has closed — create or join a new one','err');
+});
+// Our account's match is still being played: back to it.
+socket.on('room:match', ({code})=>{ setConnNotice('Your match is still on — taking you back…'); remember(null); window.location.href='/pong-multiplayer.html?room='+encodeURIComponent(code); });
+// Our seat was opened in another tab or device: this tab steps back to the list.
+socket.on('room:superseded', ({message})=>{ setSuperseded(true); backToList(); setConnNotice((message||'You opened this room somewhere else.')+' Join it again here to move it back.'); });
+socket.on('connect_error', (e)=>{ status('Cannot connect to server','err'); if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { try { localStorage.removeItem('pongmp_auth'); sessionStorage.removeItem('pongmp_auth'); } catch (_) {} if (e.message) document.getElementById('login-gate-msg').textContent = e.message; document.getElementById('login-gate').style.display = 'flex'; } });
 socket.on('room:error', ({message})=>{ status(message,'err');
   if(document.getElementById('join-modal').classList.contains('open')) document.getElementById('join-error').textContent=message;
   if(document.getElementById('modal-overlay').classList.contains('open')) document.getElementById('create-error').textContent=message; });
@@ -313,16 +340,23 @@ socket.on('room:close',  ()=>socket.emit('room:list'));
 socket.on('room:update', ()=>socket.emit('room:list'));
 
 // The host removed us: back to the room list with the reason.
-socket.on('room:kicked', ({message})=>{ myRoom=null; isMaster=false; isReady=false; showList(); status(message||'You were removed by the host','err'); socket.emit('room:list'); });
-socket.on('room:created', ({room})=>{ setConnNotice(''); closeCreateModal(); myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
-socket.on('room:joined',  ({room,player})=>{ setConnNotice(''); closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=false; showDetail(); renderDetail(room); status('Joined room '+room.code,'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
-socket.on('room:state',   room=>{ myRoom=room; renderPlayers(room); updateActions(); });
+socket.on('room:kicked', ({message})=>{ remember(null); backToList(); status(message||'You were removed by the host','err'); });
+socket.on('room:created', ({room})=>{ setSuperseded(false); remember(room.code); setConnNotice(''); closeCreateModal(); myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
+// Joined — or our own seat handed back (rejoined): seat, ready state and host role kept.
+socket.on('room:joined',  ({room,player,rejoined})=>{ setSuperseded(false); remember(room.code); setConnNotice(''); closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=!!(player&&player.ready); showDetail(); renderDetail(room); status(rejoined?('Back in room '+room.code):('Joined room '+room.code),'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
+socket.on('room:state',   room=>{
+  if(!myRoom || myRoom.code!==room.code) return;
+  myRoom=room;
+  const me=(room.players||[]).find(p=>p.id===socket.id);
+  if(me){ isMaster=!!me.master; isReady=!!me.ready; }
+  renderPlayers(room); updateActions();
+});
 socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); status(player.name+' joined','ok'); });
 socket.on('room:player:leave', ()=>{ sysMsg('A player left'); updateActions(); });
 socket.on('room:player:ready', ({player})=>status(player.name+' is ready!','ok'));
 socket.on('room:master', ({master})=>{ if(master===socket.id){ isMaster=true; updateActions(); status('You are now host','ok'); } });
 socket.on('room:talk', ({player,content})=>addMsg(player,content));
-socket.on('room:game:start', ({code})=>{ status('Game starting!','ok'); setTimeout(()=>{ window.location.href='/pong-multiplayer.html?room='+code+'&name='+encodeURIComponent(myName); },600); });
+socket.on('room:game:start', ({code})=>{ remember(null); status('Game starting!','ok'); setTimeout(()=>{ window.location.href='/pong-multiplayer.html?room='+code+'&name='+encodeURIComponent(myName); },600); });
 
 function renderRoomList(rooms) {
   const tbody=document.getElementById('rooms-tbody');
@@ -337,7 +371,8 @@ function renderRoomList(rooms) {
   else { heading.textContent='You can join '+rooms.length+' rooms!'; heading.className=''; }
   rooms.forEach((r,i)=>{
     const tr=document.createElement('tr');
-    const full=r.players>=2;
+    // A full room that holds our own seat (e.g. opened in another tab) can still be joined: it hands the seat back.
+    const full=r.players>=2 && r.id!==remembered();
     tr.innerHTML=`
       <td class="room-name">${esc(r.name)}${r.locked ? ' <span style="color:#FFB400;font-size:10px;letter-spacing:.5px;vertical-align:middle;">PRIVATE</span>' : ''}</td>
       <td class="room-players">${r.players} player${r.players!==1?'s':''}</td>
@@ -374,11 +409,12 @@ function renderPlayers(room) {
   players.forEach((p,i)=>{
     const tr=document.createElement('tr');
     const isMe=p.id===socket.id;
-    const badge=p.master
+    const away=p.away?' <span class="ready-badge ready-no" style="color:#FFB400;border-color:rgba(255,180,0,0.4);">Away</span>':'';
+    const badge=(p.master
       ?'<span class="ready-badge ready-host">HOST</span>'
       :p.ready
         ?'<span class="ready-badge ready-yes">✓ Ready</span>'
-        :'<span class="ready-badge ready-no">Not ready</span>';
+        :'<span class="ready-badge ready-no">Not ready</span>')+away;
     // The host sees ✕ to remove the other player.
     const kick=(isMaster && !p.master)?`<button class="kick-btn" title="Remove from room" onclick="kickPlayer('${esc(p.id)}')">✕</button>`:'';
     tr.innerHTML=`
@@ -394,7 +430,8 @@ function renderPlayers(room) {
     tbody.appendChild(tr);
   }
   const readyCount=players.filter(p=>p.ready).length;
-  document.getElementById('ready-status').textContent=readyCount+'/2 ready';
+  const awayNames=players.filter(p=>p.away).map(p=>p.name);
+  document.getElementById('ready-status').textContent=awayNames.length?('Waiting for '+awayNames.join(', ')+' to come back'):(readyCount+'/2 ready');
 }
 
 function updateActions() {
@@ -406,10 +443,12 @@ function updateActions() {
   // Ready-check (no payment): the guest presses Ready; the host's Start is
   // enabled once the guest is in and ready (the server enforces the same).
   const guestReady=hasGuest && players.filter(p=>!p.master).every(p=>p.ready);
+  // Nobody starts a match for a player who isn't there (the server enforces it too).
+  const away=players.filter(p=>p.away).map(p=>p.name);
   btnReady.style.display=isMaster?'none':'inline-block';
   btnStart.style.display=isMaster?'inline-block':'none';
-  btnStart.disabled=!guestReady;
-  btnStart.title=guestReady?'':(hasGuest?'Waiting for your opponent to be ready':'Waiting for an opponent');
+  btnStart.disabled=!guestReady || away.length>0;
+  btnStart.title=away.length?('Waiting for '+away.join(', ')+' to come back'):guestReady?'':(hasGuest?'Waiting for your opponent to be ready':'Waiting for an opponent');
   if(isReady){ btnReady.textContent='✓ Ready'; btnReady.classList.add('is-ready'); }
   else { btnReady.textContent='Ready?'; btnReady.classList.remove('is-ready'); }
 }
@@ -436,6 +475,7 @@ document.getElementById('btn-start').onclick=()=>{
 
 document.getElementById('btn-leave').onclick=()=>{
   socket.emit('room:leave');
+  remember(null);
   myRoom=null; isMaster=false; isReady=false;
   showList(); status('Left room','');
 };
