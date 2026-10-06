@@ -90,6 +90,8 @@ td.room-enter{text-align:right;}
 
 /* ACTIONS */
 .room-actions{display:flex;gap:10px;align-items:center;}
+.rematch-box{display:none;margin:0 0 18px;padding:12px 16px;border-radius:10px;background:rgba(180,80,255,0.1);border:1px solid rgba(180,80,255,0.4);color:#e6ccff;font-size:14px;font-weight:600;}
+.rematch-box button{margin-left:12px;background:#b450ff;color:#fff;border:none;padding:8px 18px;font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:700;border-radius:8px;cursor:pointer;}
 .btn-ready{background:#4CFF6C;color:#111;border:none;padding:10px 24px;font-family:'Space Grotesk',sans-serif;font-size:14px;font-weight:700;border-radius:8px;cursor:pointer;display:none;margin-bottom:18px;}
 .btn-ready:hover{background:#2ecc71;}
 .btn-ready.is-ready{background:rgba(76,255,108,0.15);color:#4CFF6C;cursor:default;}
@@ -176,6 +178,7 @@ td.room-enter{text-align:right;}
       </div>
     </div>
 
+    <div class="rematch-box" id="rematch-box"><span id="rematch-text"></span><button id="btn-rematch" style="display:none">REMATCH</button></div>
     <button class="btn-start-now" id="btn-start">Start now!</button>
     <button class="btn-ready" id="btn-ready">Ready?</button>
 
@@ -343,9 +346,9 @@ socket.on('room:update', ()=>socket.emit('room:list'));
 
 // The host removed us: back to the room list with the reason.
 socket.on('room:kicked', ({message})=>{ remember(null); backToList(); status(message||'You were removed by the host','err'); });
-socket.on('room:created', ({room})=>{ setSuperseded(false); remember(room.code); setConnNotice(''); closeCreateModal(); myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
+socket.on('room:created', ({room,chat})=>{ renderChat(chat); setSuperseded(false); remember(room.code); setConnNotice(''); closeCreateModal(); myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
 // Joined — or our own seat handed back (rejoined): seat, ready state and host role kept.
-socket.on('room:joined',  ({room,player,rejoined})=>{ setSuperseded(false); remember(room.code); setConnNotice(''); closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=!!(player&&player.ready); showDetail(); renderDetail(room); status(rejoined?('Back in room '+room.code):('Joined room '+room.code),'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
+socket.on('room:joined',  ({room,player,rejoined,chat})=>{ renderChat(chat); setSuperseded(false); remember(room.code); setConnNotice(''); closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=!!(player&&player.ready); showDetail(); renderDetail(room); status(rejoined?('Back in room '+room.code):('Joined room '+room.code),'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
 socket.on('room:state',   room=>{
   if(!myRoom || myRoom.code!==room.code) return;
   myRoom=room;
@@ -359,6 +362,12 @@ socket.on('room:player:leave', ()=>{ sysMsg('A player left'); updateActions(); }
 socket.on('room:player:ready', ({player})=>status(player.name+' is ready!','ok'));
 socket.on('room:master', ({master})=>{ if(master===socket.id){ isMaster=true; updateActions(); status('You are now host','ok'); } });
 socket.on('room:talk', ({player,content})=>addMsg(player,content));
+// Rematch: both players must press. Accepted → back to the normal Ready → Start flow.
+socket.on('room:rematch', ({accepted,cancelled})=>{
+  if(accepted){ sysMsg('Rematch on!'); status(isMaster?'Rematch on — start once your opponent is ready':'Rematch on — press Ready','ok'); }
+  if(cancelled){ sysMsg(cancelled); setConnNotice(cancelled); status(cancelled,'err'); }
+});
+document.getElementById('btn-rematch').onclick=()=>{ if(myRoom&&myRoom.rematch) socket.emit('room:rematch'); };
 socket.on('room:game:start', ({code})=>{ remember(null); status('Game starting!','ok'); setTimeout(()=>{ window.location.href='/pong-multiplayer.html?room='+code+'&name='+encodeURIComponent(myName); },600); });
 
 function renderRoomList(rooms) {
@@ -437,10 +446,24 @@ function renderPlayers(room) {
   document.getElementById('ready-status').textContent=awayNames.length?('Waiting for '+awayNames.join(', ')+' to come back'):(readyCount+'/2 ready');
 }
 
+// Chat history from the server (kept for the room's life, across matches).
+function renderChat(chat){ if(!Array.isArray(chat)) return; document.getElementById('chat-msgs').innerHTML=''; chat.forEach(m=>addMsg(m.player,m.content)); }
+function renderRematch(){
+  const box=document.getElementById('rematch-box'), btn=document.getElementById('btn-rematch'), txt=document.getElementById('rematch-text');
+  const r=myRoom&&myRoom.rematch;
+  box.style.display=r?'block':'none';
+  if(!r) return;
+  const iPressed=(r.by||[]).includes(socket.id);
+  txt.textContent=iPressed?('Waiting for '+((r.waiting||[]).join(', ')||'your opponent')+' to accept…'):(((r.names||[]).join(', ')||'Your opponent')+' wants a rematch');
+  btn.style.display=iPressed?'none':'inline-block';
+}
 function updateActions() {
   const btnReady=document.getElementById('btn-ready');
   const btnStart=document.getElementById('btn-start');
+  renderRematch();
   if(!myRoom) return;
+  // Pending rematch: no Ready/Start until both players have pressed Rematch.
+  if(myRoom.rematch){ btnReady.style.display='none'; btnStart.style.display='none'; return; }
   const players=myRoom.players||[];
   const hasGuest=players.length===2;
   // Ready-check (no payment): the guest presses Ready; the host's Start is

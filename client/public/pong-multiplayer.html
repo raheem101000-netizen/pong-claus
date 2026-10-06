@@ -83,6 +83,7 @@ canvas { display: block; background: #000; transform: translateZ(0); }
       <div id="mr-change">YOU WIN!</div>
       <div id="mr-score">10 — 7</div>
       <div id="mr-credit" style="display:none;font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:700;color:#4CFF6C;margin:4px 0 18px;text-align:center;"></div>
+      <button class="btn-green" id="btn-rematch" style="display:none;margin-bottom:12px;background:#b450ff;color:#fff;">REMATCH</button>
       <button class="btn-green" id="btn-back-to-lobby">Back to Lobby</button>
       <a id="tenten-back-result" class="tenten-back-btn" href="https://tenten.run/">← TENTEN</a>
     </div>
@@ -323,6 +324,24 @@ function connect() {
     else { el.textContent = "Your prize couldn't be added automatically — it's been logged and will be credited."; el.style.color = '#FFB400'; }
     el.style.display = 'block';
   });
+  // Rematch: offered once the match is decided and paid. The first press
+  // takes both players back to their room's chat, where the other accepts.
+  socket.on('rematch:available', () => {
+    if (lobbyReturnTimer) return;   // already on the way back to the lobby
+    const b = document.getElementById('btn-rematch');
+    b.style.display = 'inline-block'; b.disabled = false; b.textContent = 'REMATCH';
+  });
+  socket.on('rematch:go', () => {
+    const b = document.getElementById('btn-rematch');
+    b.disabled = true; b.textContent = 'Back to the room…';
+    setTimeout(() => { if (socket) socket.disconnect(); window.location.href = backToLobbyURL(); }, 400);
+  });
+  socket.on('rematch:error', ({ message }) => {
+    const b = document.getElementById('btn-rematch');
+    b.style.display = 'none';
+    const el = document.getElementById('mr-credit');
+    el.textContent = message || 'Rematch not possible right now'; el.style.color = '#FFB400'; el.style.display = 'block';
+  });
   socket.on('opponentLeft', () => {
     gameRunning = false; matchOver = true; updateConnBanner();
     showError('Opponent left the game');
@@ -553,6 +572,12 @@ canvas.addEventListener('touchend',   e => { e.preventDefault(); }, { passive: f
 document.getElementById('btn-create').onclick=()=>{ myName=document.getElementById('name-input').value.trim()||'Player 1'; connect(); socket.on('connect',()=>socket.emit('createRoom',{name:myName})); };
 document.getElementById('btn-join').onclick=()=>{ const code=document.getElementById('code-input').value.trim(); if(code.length!==4){showError('Enter a 4-digit code');return;} myName=document.getElementById('name-input').value.trim()||'Player 2'; connect(); socket.on('connect',()=>socket.emit('joinRoom',{code,name:myName})); };
 document.getElementById('btn-cancel').onclick=()=>{ if(socket)socket.disconnect(); document.getElementById('waiting-screen').style.display='none'; document.getElementById('overlay').style.display='flex'; };
+document.getElementById('btn-rematch').onclick=()=>{
+  const b = document.getElementById('btn-rematch');
+  if (b.disabled || !socket) return;
+  b.disabled = true; b.textContent = 'Asking for a rematch…';
+  socket.emit('rematch');
+};
 document.getElementById('btn-back-to-lobby').onclick=()=>{
   if (socket) socket.disconnect();
   window.location.href = backToLobbyURL();
