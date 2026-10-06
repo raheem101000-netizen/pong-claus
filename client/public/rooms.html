@@ -328,6 +328,8 @@ socket.on('room:rejoin:none', ()=>{
 // Our account's match is still being played: back to it.
 socket.on('room:match', ({code})=>{ setConnNotice('Your match is still on — taking you back…'); remember(null); window.location.href='/pong-multiplayer.html?room='+encodeURIComponent(code); });
 // Our seat was opened in another tab or device: this tab steps back to the list.
+// Away longer than the seat hold: the server released our seat.
+socket.on('room:released', ({message})=>{ remember(null); backToList(); setConnNotice(message||'Your seat was released after being away too long.'); });
 socket.on('room:superseded', ({message})=>{ setSuperseded(true); backToList(); setConnNotice((message||'You opened this room somewhere else.')+' Join it again here to move it back.'); });
 socket.on('connect_error', (e)=>{ status('Cannot connect to server','err'); if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { try { localStorage.removeItem('pongmp_auth'); sessionStorage.removeItem('pongmp_auth'); } catch (_) {} if (e.message) document.getElementById('login-gate-msg').textContent = e.message; document.getElementById('login-gate').style.display = 'flex'; } });
 socket.on('room:error', ({message})=>{ status(message,'err');
@@ -348,7 +350,8 @@ socket.on('room:state',   room=>{
   if(!myRoom || myRoom.code!==room.code) return;
   myRoom=room;
   const me=(room.players||[]).find(p=>p.id===socket.id);
-  if(me){ isMaster=!!me.master; isReady=!!me.ready; }
+  if(!me){ remember(null); backToList(); return; }  // our seat is no longer in this room
+  isMaster=!!me.master; isReady=!!me.ready;
   renderPlayers(room); updateActions();
 });
 socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); status(player.name+' joined','ok'); });

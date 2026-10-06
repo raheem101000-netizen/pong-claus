@@ -30,6 +30,7 @@ interface PlayerData {
   ready: boolean;
   master: boolean;
   color: string;
+  connected: boolean; // a live connection is attached (false from the moment the server sees it drop)
   lastSeen: number;  // last heartbeat from the seat's connection (ms epoch)
   away: boolean;
   awaySince: number;
@@ -132,7 +133,7 @@ export class LobbyRoom extends Room {
         userId: auth.userId,
         name: auth.displayName || 'Player 1',
         color: data.player?.color || '#b450ff',
-        ready: false, master: true,
+        ready: false, master: true, connected: true,
         lastSeen: Date.now(), away: false, awaySince: 0
       };
       const room: LobbyRoomData = {
@@ -175,7 +176,7 @@ export class LobbyRoom extends Room {
         userId: auth.userId,
         name: auth.displayName || 'Player 2',
         color: data.player?.color || '#4488FF',
-        ready: false, master: false,
+        ready: false, master: false, connected: true,
         lastSeen: Date.now(), away: false, awaySince: 0
       };
       if (this.pendingDeletion.has(code)) {
@@ -277,6 +278,8 @@ export class LobbyRoom extends Room {
   // (heartbeat) decides away/release, and account rejoin takes it back.
   onDrop(client: Client) {
     if (!this.clientRoom.has(client.sessionId)) return; // not holding a seat: nothing to resume
+    const seat = this.seatOf(client);
+    if (seat) this.markGone(seat.room, seat.pd);       // shown away at once (as FIFA)
     const held: any = this.allowReconnection(client, LOBBY_RECONNECT_SECONDS);
     if (held?.reject) this.held.set(client.sessionId, held);
     const done = () => { if (this.held.get(client.sessionId) === held) this.held.delete(client.sessionId); };
@@ -287,6 +290,7 @@ export class LobbyRoom extends Room {
   onReconnect(client: Client) {
     const seat = this.seatOf(client);
     if (seat) {
+      seat.pd.connected = true;
       this.touch(seat.room, seat.pd);
       client.send('room:state', serializeRoom(seat.room));
     }
@@ -297,6 +301,8 @@ export class LobbyRoom extends Room {
   // away once the heartbeat stops); only room:leave, a kick or the seat hold
   // running out gives it up.
   onLeave(client: Client) {
+    const seat = this.seatOf(client);
+    if (seat) this.markGone(seat.room, seat.pd);
     this.clientRoom.delete(client.sessionId);
   }
 
@@ -328,6 +334,7 @@ export class LobbyRoom extends Room {
       if (h) { this.held.delete(old); h.reject(false); }
     }
     pd.id = client.sessionId;
+    pd.connected = true;
     this.clientRoom.set(client.sessionId, room.code);
     this.userRoom.set(pd.userId, room.code);
     this.touch(room, pd, false);
@@ -345,10 +352,16 @@ export class LobbyRoom extends Room {
 
   private touch(room: LobbyRoomData, pd: PlayerData, notify = true) {
     pd.lastSeen = Date.now();
-    if (pd.away) {
+    if (pd.away && pd.connected) {
       pd.away = false; pd.awaySince = 0;
       if (notify) this.sendToRoom(room, 'room:state', serializeRoom(room));
     }
+  }
+
+  // The seat's connection is gone (dropped or left): away from now on.
+  private markGone(room: LobbyRoomData, pd: PlayerData) {
+    pd.connected = false;
+    if (!pd.away) { pd.away = true; pd.awaySince = Date.now(); this.sendToRoom(room, 'room:state', serializeRoom(room)); }
   }
 
   private releaseAccountSeat(userId: number) {
@@ -393,7 +406,7 @@ export class LobbyRoom extends Room {
 
   private setMaster(room: LobbyRoomData, next: PlayerData) {
     const prev = room.players[room.master];
-    if (prev) { prev.master = false; prev.ready = false; }
+    if (prev) prev.master = false;
     room.master = next.userId;
     next.master = true;
     this.sendToRoom(room, 'room:master', { master: next.id });
@@ -407,12 +420,12 @@ export class LobbyRoom extends Room {
       if (room.started) continue;
       let changed = false;
       for (const pd of Object.values(room.players)) {
-        const quiet = now - pd.lastSeen > AWAY_AFTER_MS;
-        if (quiet !== pd.away) { pd.away = quiet; pd.awaySince = quiet ? now : 0; changed = true; }
+        if (!pd.away && (!pd.connected || now - pd.lastSeen > AWAY_AFTER_MS)) { pd.away = true; pd.awaySince = now; changed = true; }
       }
       for (const pd of Object.values(room.players)) {
         if (pd.away && now - pd.awaySince > SEAT_HOLD_MS) {
           console.log(`[lobby] seat of account ${pd.userId} released in room ${room.code} (away too long)`);
+          this.clients.find(c => c.sessionId === pd.id)?.send('room:released', { message: 'Your seat was released after being away too long.' });
           this.releaseSeat(room, pd.userId);
           changed = false; // releaseSeat already sent the room's state
         }

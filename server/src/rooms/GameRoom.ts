@@ -42,9 +42,13 @@ const WALKOVER_AFTER_MS = Number(process.env.PONG_WALKOVER_AFTER_MS) || 30_000;
 // Seats are held this long with nobody present; then the room closes. Pong
 // matches are a few minutes, so shorter than FIFA's 60 min.
 const MATCH_SEAT_HOLD_MS = Number(process.env.PONG_MATCH_SEAT_HOLD_MS) || 20 * 60_000;
+// Once decided, close after nobody has been here this long (as FIFA).
+const MATCH_DONE_LINGER_MS = 15 * 60_000;
+// Hard cap on a match room's life (as FIFA).
+const MATCH_MAX_AGE_MS = 4 * 60 * 60_000;
 const SWEEP_MS = 2_000;
 
-interface PlayerSlot { sessionId: string; bid: string | null; name: string; userId: number; lastSeen: number; away: boolean; awaySince: number; }
+interface PlayerSlot { sessionId: string; bid: string | null; name: string; userId: number; connected: boolean; lastSeen: number; away: boolean; awaySince: number; }
 interface BallState  { x: number; y: number; vx: number; vy: number; lastHitter: 'p1' | 'p2' | null; }
 interface PaddleState { x: number; y: number; score: number; }
 interface PowerupState { type: string; x: number; y: number; r: number; life: number; pulse: number; }
@@ -128,6 +132,7 @@ export class GameRoom extends Room {
   private abandoned = false;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private lastPresentAt = Date.now();
+  private createdAt = Date.now();
   private held = new Map<string, { reject: (e?: any) => void }>(); // pending token resumes, by connection
 
   static async onAuth(token: string, options: any) {
@@ -167,6 +172,7 @@ export class GameRoom extends Room {
           if (h) { this.held.delete(old); h.reject(false); }
         }
         prior.sessionId = client.sessionId;
+        prior.connected = true;
         this.touch(prior);
         const idx = this.gameJoined.indexOf(prior);
         client.send('roomJoined', {
@@ -190,7 +196,7 @@ export class GameRoom extends Room {
       if (this.gameJoined.find(p => p.sessionId === client.sessionId)) return;
       if (this.gameJoined.length >= 2) return;
 
-      this.gameJoined.push({ sessionId: client.sessionId, bid, name, userId: auth.userId, lastSeen: Date.now(), away: false, awaySince: 0 });
+      this.gameJoined.push({ sessionId: client.sessionId, bid, name, userId: auth.userId, connected: true, lastSeen: Date.now(), away: false, awaySince: 0 });
       const myIndex = this.gameJoined.length - 1;
       const role = myIndex === 0 ? 'p1' : 'p2';
 
@@ -258,6 +264,8 @@ export class GameRoom extends Room {
   // reconnection token. The seat doesn't depend on it — the heartbeat decides
   // presence, and joinRoom from a new connection takes the seat back.
   onDrop(client: Client) {
+    const slot = this.gameJoined.find(p => p.sessionId === client.sessionId);
+    if (slot) this.markGone(slot);                    // shown away at once (as FIFA)
     const held: any = this.allowReconnection(client, MATCH_SEAT_HOLD_MS / 1000);
     if (held?.reject) this.held.set(client.sessionId, held);
     const done = () => { if (this.held.get(client.sessionId) === held) this.held.delete(client.sessionId); };
@@ -266,13 +274,17 @@ export class GameRoom extends Room {
 
   onReconnect(client: Client) {
     const slot = this.gameJoined.find(p => p.sessionId === client.sessionId);
-    if (slot) this.touch(slot);
+    if (!slot) { if (this.gameJoined.length >= 2) client.leave(4000); return; } // seat taken over meanwhile
+    slot.connected = true;
+    this.touch(slot);
   }
 
   // A connection is gone for good: its seat stays with the account (away once
   // the heartbeat stops — see sweep()).
   onLeave(client: Client) {
     console.log('LEAVE: session=' + client.sessionId);
+    const slot = this.gameJoined.find(p => p.sessionId === client.sessionId);
+    if (slot) this.markGone(slot);
   }
 
   onDispose() {
@@ -280,9 +292,14 @@ export class GameRoom extends Room {
     if (this.gameInterval) clearInterval(this.gameInterval);
   }
 
+  private markGone(slot: PlayerSlot) {
+    slot.connected = false;
+    if (!slot.away) { slot.away = true; slot.awaySince = Date.now(); this.sendPresence(); }
+  }
+
   private touch(slot: PlayerSlot) {
     slot.lastSeen = Date.now();
-    if (slot.away) { slot.away = false; slot.awaySince = 0; this.sendPresence(); }
+    if (slot.away && slot.connected) { slot.away = false; slot.awaySince = 0; this.sendPresence(); }
   }
 
   // Who is away, to everyone (or one client).
@@ -298,14 +315,17 @@ export class GameRoom extends Room {
     const now = Date.now();
     let changed = false;
     for (const slot of this.gameJoined) {
-      const quiet = now - slot.lastSeen > AWAY_AFTER_MS;
-      if (quiet !== slot.away) { slot.away = quiet; slot.awaySince = quiet ? now : 0; changed = true; }
+      if (!slot.away && (!slot.connected || now - slot.lastSeen > AWAY_AFTER_MS)) { slot.away = true; slot.awaySince = now; changed = true; }
     }
     if (changed) this.sendPresence();
 
-    if (this.gameJoined.some(p => !p.away)) this.lastPresentAt = now;
-    else if (now - this.lastPresentAt > MATCH_SEAT_HOLD_MS) {
-      console.log('[match] ' + this.roomId + ': no seat held for ' + (MATCH_SEAT_HOLD_MS / 60000) + ' min — closing');
+    const anyoneHere = this.gameJoined.some(p => !p.away);
+    if (anyoneHere) this.lastPresentAt = now;
+    const decided = !!this.finalResult || this.abandoned;
+    if ((decided && !anyoneHere && now - this.lastPresentAt > MATCH_DONE_LINGER_MS) ||
+        (!anyoneHere && now - this.lastPresentAt > MATCH_SEAT_HOLD_MS) ||
+        now - this.createdAt > MATCH_MAX_AGE_MS) {
+      console.log('[match] ' + this.roomId + ': nobody holding a seat — closing');
       this.setMetadata({ over: true });
       this.disconnect();
       return;
