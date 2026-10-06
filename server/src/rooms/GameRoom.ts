@@ -29,7 +29,22 @@ const POWERUP_TYPES: Record<string, { emoji: string; color: string; duration: nu
 const POWERUP_KEYS = Object.keys(POWERUP_TYPES);
 const OBSTACLE_INTERVAL = 480;
 
-interface PlayerSlot { sessionId: string; bid: string | null; name: string; userId: number; }
+// ── Account-owned seats (same model as FIFA's FifaRoom / the Pong lobby) ─────
+// A match seat belongs to the account: the same account on a new connection
+// (reload, new tab, bfcache, a drop the server never saw) takes its paddle
+// back. Presence comes from the page's "hb" heartbeat (~5 s), not Colyseus
+// pings. The room stays open while any seat is held, so a finished match can
+// always be reported to a player who comes back. Env overrides: tests only.
+const AWAY_AFTER_MS    = Number(process.env.PONG_AWAY_AFTER_MS) || 15_000;
+// A player away this long during play hands the opponent who is still there
+// the win (walkover — same endMatch/credit path as before).
+const WALKOVER_AFTER_MS = Number(process.env.PONG_WALKOVER_AFTER_MS) || 30_000;
+// Seats are held this long with nobody present; then the room closes. Pong
+// matches are a few minutes, so shorter than FIFA's 60 min.
+const MATCH_SEAT_HOLD_MS = Number(process.env.PONG_MATCH_SEAT_HOLD_MS) || 20 * 60_000;
+const SWEEP_MS = 2_000;
+
+interface PlayerSlot { sessionId: string; bid: string | null; name: string; userId: number; lastSeen: number; away: boolean; awaySince: number; }
 interface BallState  { x: number; y: number; vx: number; vy: number; lastHitter: 'p1' | 'p2' | null; }
 interface PaddleState { x: number; y: number; score: number; }
 interface PowerupState { type: string; x: number; y: number; r: number; life: number; pulse: number; }
@@ -81,7 +96,11 @@ function initGameState(): GameState {
 }
 
 export class GameRoom extends Room {
-  maxClients = 4;
+  // Two seats, with spare connection headroom so a player's own replacement
+  // connection is never refused as "full" (stale ones are cancelled on takeover).
+  maxClients = 8;
+  // Closed by the presence sweep once no seat is held, not when it empties.
+  autoDispose = false;
 
   private gameJoined: PlayerSlot[] = [];
   private gs: GameState | null = null;
@@ -105,6 +124,11 @@ export class GameRoom extends Room {
   // message and, for the winner, the prize message.
   private finalResult: any = null;
   private creditResult: { userId: number; state: { status: string; amount?: string } } | null = null;
+  // Play was stopped because both players were gone (no one to award).
+  private abandoned = false;
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private lastPresentAt = Date.now();
+  private held = new Map<string, { reject: (e?: any) => void }>(); // pending token resumes, by connection
 
   static async onAuth(token: string, options: any) {
     return authenticateGameToken(token, options?.playerId);
@@ -121,6 +145,8 @@ export class GameRoom extends Room {
       throw new Error("A match needs exactly two different players");
     }
     this.allowedUserIds = ids;
+    this.setMetadata({ over: false });
+    this.sweepTimer = setInterval(() => this.sweep(), SWEEP_MS);
 
     this.onMessage("joinRoom", (client: Client, data: { code?: string; name?: string; bid?: string }) => {
       // Identity comes from the login token (onAuth), never from the client.
@@ -128,21 +154,35 @@ export class GameRoom extends Room {
       const name = auth.displayName || 'Player';
       const bid = data.bid || null;
 
-      // Reconnect / second tab: the same account takes its existing slot back.
+      // Reconnect / reload / second tab: the same account takes its existing
+      // slot back; a different connection that held it is told and let go.
       const prior = this.gameJoined.find(p => p.userId === auth.userId) || null;
       if (prior) {
         console.log('REBIND:', name, 'bid=' + bid, prior.sessionId, '->', client.sessionId);
+        const old = prior.sessionId;
+        if (old !== client.sessionId) {
+          const oldClient = this.clients.find(c => c.sessionId === old);
+          if (oldClient) { oldClient.send('superseded', { message: 'You opened this match somewhere else.' }); oldClient.leave(4000); }
+          const h = this.held.get(old);
+          if (h) { this.held.delete(old); h.reject(false); }
+        }
         prior.sessionId = client.sessionId;
+        this.touch(prior);
         const idx = this.gameJoined.indexOf(prior);
         client.send('roomJoined', {
           code: this.roomId, role: idx === 0 ? 'p1' : 'p2',
           myName: name, paddlePos: idx === 0 ? 'BOTTOM' : 'TOP'
         });
+        const other = this.gameJoined[idx === 0 ? 1 : 0];
+        if (other) client.send('opponentName', { name: other.name });
+        this.sendPresence(client);
         // Back after the match was decided without them (e.g. away too long →
         // walkover): show them the result instead of a frozen board.
         if (this.finalResult) {
           client.send('matchEnd', { ...this.finalResult, rejoined: true });
           if (this.creditResult && this.creditResult.userId === auth.userId) client.send('pongmp:credit', this.creditResult.state);
+        } else if (this.abandoned) {
+          client.send('opponentLeft');
         }
         return;
       }
@@ -150,7 +190,7 @@ export class GameRoom extends Room {
       if (this.gameJoined.find(p => p.sessionId === client.sessionId)) return;
       if (this.gameJoined.length >= 2) return;
 
-      this.gameJoined.push({ sessionId: client.sessionId, bid, name, userId: auth.userId });
+      this.gameJoined.push({ sessionId: client.sessionId, bid, name, userId: auth.userId, lastSeen: Date.now(), away: false, awaySince: 0 });
       const myIndex = this.gameJoined.length - 1;
       const role = myIndex === 0 ? 'p1' : 'p2';
 
@@ -173,6 +213,7 @@ export class GameRoom extends Room {
       if (!this.gs) return;
       const idx = this.gameJoined.findIndex(p => p.sessionId === client.sessionId);
       if (idx === -1) { console.log('[paddleMove] DROP idx=-1 session=' + client.sessionId); return; }
+      this.touch(this.gameJoined[idx]);
       const key: 'p1' | 'p2' = idx === 0 ? 'p1' : 'p2';
       const paddle = idx === 0 ? this.gs.p1 : this.gs.p2;
       if (!this.isFrozen(key) && Number.isFinite(data?.x)) {
@@ -189,7 +230,13 @@ export class GameRoom extends Room {
       if (arr.length > 240) { this.xBeforeSamples[key] = arr[arr.length - 241].x; arr.splice(0, arr.length - 240); }
     });
 
-    this.onMessage("hb", () => {});
+    // Presence heartbeat (~5 s): answered so the page can spot a dead
+    // connection, and keeps this account's seat present.
+    this.onMessage("hb", (client: Client) => {
+      client.send("hb");
+      const slot = this.gameJoined.find(p => p.sessionId === client.sessionId);
+      if (slot) this.touch(slot);
+    });
 
     this.onMessage("ping", (client: Client, data: { ts: number }) => {
       client.send("pong", { ts: data.ts });
@@ -207,29 +254,84 @@ export class GameRoom extends Room {
     }
   }
 
-  onLeave(client: Client) {
-    const sessionId = client.sessionId;
-    console.log('LEAVE: session=' + sessionId);
-    setTimeout(() => {
-      const slot = this.gameJoined.find(p => p.sessionId === sessionId);
-      if (!slot) { console.log('LEAVE grace: ' + sessionId + ' rebound — continuing'); return; }
-      console.log('LEAVE grace expired — ending game');
-      const wasPlaying = !!this.gs; // a match was in progress (not countdown, not already finished)
-      if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
+  // Fast path: a dropped connection can resume the SAME session with its
+  // reconnection token. The seat doesn't depend on it — the heartbeat decides
+  // presence, and joinRoom from a new connection takes the seat back.
+  onDrop(client: Client) {
+    const held: any = this.allowReconnection(client, MATCH_SEAT_HOLD_MS / 1000);
+    if (held?.reject) this.held.set(client.sessionId, held);
+    const done = () => { if (this.held.get(client.sessionId) === held) this.held.delete(client.sessionId); };
+    held?.then?.(done, done);
+  }
 
-      // Walkover (same as FIFA / Puz Royale / Kurver): the player who left
-      // didn't come back within the grace, so the opponent who is still here
-      // wins — through the same endMatch → creditWinner path and the same
-      // 'pongmp:<roomId>' key, so a normal finish and a walkover can't both pay.
-      const other = this.gameJoined.find(p => p !== slot);
-      const otherStillHere = !!other && this.clients.some(c => c.sessionId === other.sessionId);
-      if (wasPlaying && otherStillHere && !this.matchSettled) {
-        console.log('WALKOVER: ' + slot.name + ' left — ' + other!.name + ' wins');
-        this.endMatch(this.gameJoined.indexOf(other!) === 0 ? 'p1' : 'p2', true);
-        return;
-      }
-      this.broadcast('opponentLeft');
-    }, 15000);
+  onReconnect(client: Client) {
+    const slot = this.gameJoined.find(p => p.sessionId === client.sessionId);
+    if (slot) this.touch(slot);
+  }
+
+  // A connection is gone for good: its seat stays with the account (away once
+  // the heartbeat stops — see sweep()).
+  onLeave(client: Client) {
+    console.log('LEAVE: session=' + client.sessionId);
+  }
+
+  onDispose() {
+    if (this.sweepTimer) clearInterval(this.sweepTimer);
+    if (this.gameInterval) clearInterval(this.gameInterval);
+  }
+
+  private touch(slot: PlayerSlot) {
+    slot.lastSeen = Date.now();
+    if (slot.away) { slot.away = false; slot.awaySince = 0; this.sendPresence(); }
+  }
+
+  // Who is away, to everyone (or one client).
+  private sendPresence(to?: Client) {
+    const msg = { p1Away: !!this.gameJoined[0]?.away, p2Away: !!this.gameJoined[1]?.away };
+    if (to) to.send('presence', msg); else this.broadcast('presence', msg);
+  }
+
+  // Presence check: quiet seats show as away; a player away too long during
+  // play loses by walkover (or play stops if both are gone); the room closes
+  // once no seat has been held for MATCH_SEAT_HOLD_MS.
+  private sweep() {
+    const now = Date.now();
+    let changed = false;
+    for (const slot of this.gameJoined) {
+      const quiet = now - slot.lastSeen > AWAY_AFTER_MS;
+      if (quiet !== slot.away) { slot.away = quiet; slot.awaySince = quiet ? now : 0; changed = true; }
+    }
+    if (changed) this.sendPresence();
+
+    if (this.gameJoined.some(p => !p.away)) this.lastPresentAt = now;
+    else if (now - this.lastPresentAt > MATCH_SEAT_HOLD_MS) {
+      console.log('[match] ' + this.roomId + ': no seat held for ' + (MATCH_SEAT_HOLD_MS / 60000) + ' min — closing');
+      this.setMetadata({ over: true });
+      this.disconnect();
+      return;
+    }
+
+    if (!this.gs || this.matchSettled) return; // walkover only while a match is being played
+    const gone = this.gameJoined.filter(p => p.away && now - p.awaySince > WALKOVER_AFTER_MS);
+    if (!gone.length) return;
+    if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
+
+    // Walkover (same as FIFA / Puz Royale / Kurver): the player who left
+    // didn't come back in time, so the opponent who is still here wins —
+    // through the same endMatch → creditWinner path and the same
+    // 'pongmp:<roomId>' key, so a normal finish and a walkover can't both pay.
+    const slot = gone[0];
+    const other = this.gameJoined.find(p => p !== slot);
+    if (gone.length === 1 && other && !other.away) {
+      console.log('WALKOVER: ' + slot.name + ' away — ' + other.name + ' wins');
+      this.endMatch(this.gameJoined.indexOf(other) === 0 ? 'p1' : 'p2', true);
+      return;
+    }
+    console.log('[match] ' + this.roomId + ': both players away — play stopped');
+    this.gs = null;
+    this.abandoned = true;
+    this.setMetadata({ over: true });
+    this.broadcast('opponentLeft');
   }
 
   private startCountdown() {
@@ -692,6 +794,7 @@ export class GameRoom extends Room {
     };
     this.broadcast('matchEnd', this.finalResult);
     this.gs = null;
+    this.setMetadata({ over: true });
 
     // Auto-credit replaces the old "$8 — claim by PayPal" flow: the winner's
     // tenten.run account gets the server-set prize, once.

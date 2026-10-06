@@ -41,6 +41,7 @@ canvas { display: block; background: #000; transform: translateZ(0); }
 #mr-score   { font-size: 32px; font-weight: 700; color: #fff; margin-bottom: 22px; letter-spacing: 1px; }
 #powerup-banner { position: absolute; top: 46%; left: 50%; transform: translate(-50%,-50%); font-size: 13px; letter-spacing: 2px; color: #fff; pointer-events: none; opacity: 0; transition: opacity 0.2s; z-index: 5; text-align: center; text-shadow: 0 0 10px currentColor; white-space: nowrap; }
 #cd-msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #fff; font-size: 64px; font-weight: 300; pointer-events: none; opacity: 0; z-index: 9; font-family: monospace; transition: opacity 0.15s; }
+#conn-banner { position: absolute; top: 52px; left: 50%; transform: translateX(-50%); z-index: 8; display: none; padding: 7px 14px; border-radius: 8px; font-size: 12px; font-weight: 700; letter-spacing: 1px; background: rgba(255,180,0,0.12); border: 1px solid rgba(255,180,0,0.4); color: #FFB400; white-space: nowrap; pointer-events: none; }
 #error-msg { font-size: 11px; color: #FF4444; letter-spacing: 1px; margin-top: 6px; min-height: 16px; }
 #role-label { position: absolute; bottom: 10px; left: 0; right: 0; text-align: center; font-size: 10px; color: #222; letter-spacing: 2px; pointer-events: none; }
 .tenten-back-btn{display:inline-block;margin-top:10px;font-family:'Space Grotesk',sans-serif;font-size:13px;letter-spacing:1px;color:rgba(255,255,255,0.6);text-decoration:none;border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px 18px;}
@@ -56,6 +57,7 @@ canvas { display: block; background: #000; transform: translateZ(0); }
     <div id="canvas-wrap"><canvas id="canvas"></canvas></div>
     <div id="powerup-banner"></div>
     <div id="cd-msg"></div>
+    <div id="conn-banner"></div>
     <div id="overlay">
       <div id="lobby-title">PONG</div>
       <div id="lobby-sub">MULTIPLAYER · FIRST TO 10</div>
@@ -195,14 +197,18 @@ let drawn = { p1x: null, p2x: null, bx: null, by: null };
 let lastFrameTs = null; // for delta-time-normalized smoothing in draw()
 // Point-scored tracking (client-side, derived from score changes)
 let lastP1Score = 0, lastP2Score = 0, scoredWho = null;
+// "Reconnecting…" (our connection) / "opponent away" (theirs), above the board.
+let meReconnecting = false, oppAway = false, matchOver = false;
+function updateConnBanner() {
+  const el = document.getElementById('conn-banner');
+  const t = matchOver ? '' : meReconnecting ? 'Connection lost — reconnecting… your paddle is kept' : oppAway ? ((oppName || 'Your opponent') + ' is away — waiting for them…') : '';
+  el.textContent = t; el.style.display = t ? 'block' : 'none';
+}
 function connect() {
+  // The adapter sends the presence heartbeat ('hb' every 5 s) and handles
+  // reconnecting: fast resume first, then a fresh connection that takes our
+  // account's seat back (joinRoom on every 'connect' / 'resume', below).
   socket = io();
-  // Keepalive heartbeat — keeps the WebSocket active so Render's free tier
-  // never sees it idle and recycles it mid-game (the cause of the mid-game
-  // desync). This is what Curvytron does to survive the same free tier.
-  setInterval(() => {
-    if (socket && socket.connected) socket.emit('hb');
-  }, 15000);
   setInterval(() => {
     if (socket && socket.connected) socket.emit('ping', { ts: Date.now() });
   }, 2000);
@@ -213,10 +219,22 @@ function connect() {
   });
   socket.on('disconnect', (reason) => console.log('[CLIENT] disconnected:', reason));
   socket.on('match_gone', matchGone);
-  socket.io.on('reconnect', (n) => {
-    console.log('[CLIENT] reconnected after', n, 'attempts');
-    const rc = currentRoomCode;
-    if (rc) socket.emit('joinRoom', { code: rc, name: myName, bid: browserId });
+  socket.io.on('reconnect', (n) => console.log('[CLIENT] reconnected after', n, 'attempts'));
+  socket.on('drop', () => { meReconnecting = true; updateConnBanner(); });
+  socket.on('resume', () => {
+    meReconnecting = false; updateConnBanner();
+    socket.emit('joinRoom', { code: currentRoomCode || roomFromURL, name: myName, bid: browserId });
+  });
+  socket.on('presence', ({ p1Away, p2Away }) => { oppAway = myRole === 'p1' ? !!p2Away : !!p1Away; updateConnBanner(); });
+  // Our seat was taken over by this account in another tab/device: stop here
+  // (no frozen board). Back to Lobby from here takes it back.
+  socket.on('superseded', ({ message }) => {
+    gameRunning = false; gameState = null; matchOver = true; updateConnBanner();
+    document.getElementById('mr-change').textContent = 'OPENED ELSEWHERE';
+    document.getElementById('mr-change').style.color = '#FFB400';
+    document.getElementById('mr-score').textContent = message || 'You opened this match somewhere else.';
+    document.getElementById('mr-credit').style.display = 'none';
+    document.getElementById('match-result').style.display = 'flex';
   });
   socket.on('connect_error', () => showError('Cannot connect to server'));
   socket.on('roomCreated', ({ code, role }) => {
@@ -229,6 +247,7 @@ function connect() {
   });
   socket.on('roomJoined', ({ code, role, myName: serverName, paddlePos }) => {
     myRole = role;
+    meReconnecting = false; updateConnBanner();
     if (code) currentRoomCode = code;
     if (serverName) myName = serverName;
     document.getElementById('overlay').style.display = 'none';
@@ -276,6 +295,7 @@ function connect() {
     }
   });
   socket.on('matchEnd', (data) => {
+    matchOver = true; updateConnBanner();
     gameRunning = false; gameState = null; localPaddleX = null; lastSentX = null; drawn = { p1x: null, p2x: null, bx: null, by: null }; lastP1Score = 0; lastP2Score = 0; scoredWho = null;
     const iWon = (myRole==='p1'&&data.winner==='p1')||(myRole==='p2'&&data.winner==='p2');
     document.getElementById('mr-credit').style.display = 'none';
@@ -304,7 +324,7 @@ function connect() {
     el.style.display = 'block';
   });
   socket.on('opponentLeft', () => {
-    gameRunning = false;
+    gameRunning = false; matchOver = true; updateConnBanner();
     showError('Opponent left the game');
     setTimeout(() => {
       if (socket) socket.disconnect();
@@ -331,7 +351,7 @@ function returnToLobbySoon(seconds) {
 // The match room is gone (it closes once both players have left): the match
 // ended while we were away.
 function matchGone() {
-  gameRunning = false; gameState = null;
+  gameRunning = false; gameState = null; matchOver = true; updateConnBanner();
   document.getElementById('mr-change').textContent = 'MATCH OVER';
   document.getElementById('mr-change').style.color = '#FF4444';
   document.getElementById('mr-score').textContent = 'You were away too long — the match ended without you.';
@@ -571,21 +591,18 @@ resize(); updateHUD(0,0); draw();
 // Auto-join from rooms lobby
 const urlParams = new URLSearchParams(window.location.search);
 const roomFromURL = urlParams.get('room');
-let pongAuth = null;
-try { pongAuth = JSON.parse(sessionStorage.getItem('pongmp_auth')) || null; } catch (_) {}
+const pongAuth = window.pongmpAuth();
 // Matches start from the lobby, logged in: no login or no room → lobby (login gate there).
 if (!pongAuth || !roomFromURL) location.replace('/rooms.html');
 if (roomFromURL && pongAuth) {
   myName = pongAuth.name || 'Player';
   document.getElementById('overlay').style.display = 'none';
   connect();
+  // Every new connection (first load, reload, bfcache, or after a resume
+  // wasn't possible) asks for our account's seat: the server hands it over.
   socket.on('connect', () => {
-    socket.emit('joinRoom', { code: roomFromURL, name: myName, bid: browserId });
-  });
-  // Re-join on EVERY reconnect so the server rebinds our new socket id via bid.
-  socket.io.on('reconnect', () => {
-    const rc = currentRoomCode || roomFromURL;
-    if (rc) socket.emit('joinRoom', { code: rc, name: myName, bid: browserId });
+    meReconnecting = false; updateConnBanner();
+    socket.emit('joinRoom', { code: currentRoomCode || roomFromURL, name: myName, bid: browserId });
   });
 }
 </script>
