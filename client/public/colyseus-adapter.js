@@ -218,9 +218,12 @@
       }).catch(function (e) {
         _joining = false;
         if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { fire('connect_error', e); return; }
-        // Game page: the match room no longer exists (no seat held for a long
-        // time, so it closed) → tell the page instead of a frozen board.
-        if (isGame && e && (e.code === 522 || e.code === 4212 || /not found|disposed|locked|not a player/i.test(e.message || ''))) { fire('match_gone'); return; }
+        // Game page: a refusal for a temporary reason (room locked or full for
+        // a moment) is retried — the seat is still ours, and the server's
+        // walkover decides if we never get back in. Only a room that no
+        // longer exists, or not being a player in it, ends it here.
+        if (isGame && e && /locked|is full|already full/i.test(e.message || '')) { scheduleRejoin(2000); return; }
+        if (isGame && e && (e.code === 522 || e.code === 4212 || /not found|disposed|not a player/i.test(e.message || ''))) { fire('match_gone'); return; }
         if (!_everConnected) fire('connect_error', e);
         scheduleRejoin(3000);
       });

@@ -43,6 +43,14 @@ const WALKOVER_AFTER_MS = Number(process.env.PONG_WALKOVER_AFTER_MS) || 30_000;
 // Seats are held this long with nobody present; then the room closes. Pong
 // matches are a few minutes, so shorter than FIFA's 60 min.
 const MATCH_SEAT_HOLD_MS = Number(process.env.PONG_MATCH_SEAT_HOLD_MS) || 20 * 60_000;
+// A dropped connection that still holds a seat may resume itself (same
+// session) for this long; after that the page rejoins by account. Short on
+// purpose: each pending resume occupies a connection slot (as FIFA).
+const MATCH_RESUME_SECONDS = Number(process.env.PONG_MATCH_RESUME_SECONDS) || 60;
+// A connection replaced by a newer one is cut off after this long, so a dead
+// one (silent mobile drop) doesn't keep a connection slot until the server's
+// pings give up on it.
+const RETIRED_CUTOFF_MS = 1_000;
 // Once decided, close after nobody has been here this long (as FIFA).
 const MATCH_DONE_LINGER_MS = 15 * 60_000;
 // Hard cap on a match room's life (as FIFA).
@@ -103,7 +111,7 @@ function initGameState(): GameState {
 export class GameRoom extends Room {
   // Two seats, with spare connection headroom so a player's own replacement
   // connection is never refused as "full" (stale ones are cancelled on takeover).
-  maxClients = 8;
+  maxClients = 10;
   // Closed by the presence sweep once no seat is held, not when it empties.
   autoDispose = false;
 
@@ -178,7 +186,14 @@ export class GameRoom extends Room {
         const old = prior.sessionId;
         if (old !== client.sessionId) {
           const oldClient = this.clients.find(c => c.sessionId === old);
-          if (oldClient) { oldClient.send('superseded', { message: 'You opened this match somewhere else.' }); oldClient.leave(4000); }
+          if (oldClient) {
+            oldClient.send('superseded', { message: 'You opened this match somewhere else.' });
+            oldClient.leave(4000);
+            // A dead connection never completes that close: cut it off.
+            setTimeout(() => {
+              if (this.clients.find(c => c.sessionId === old)) { try { (oldClient as any).ref?.terminate?.(); } catch (_) {} }
+            }, RETIRED_CUTOFF_MS);
+          }
           const h = this.held.get(old);
           if (h) { this.held.delete(old); h.reject(false); }
         }
@@ -196,6 +211,7 @@ export class GameRoom extends Room {
         this.sendPresence(client);
         // Back after the match was decided without them (e.g. away too long →
         // walkover): show them the result instead of a frozen board.
+        if (this.finalResult || this.abandoned) this.markResultSeen(auth.userId);
         if (this.finalResult) {
           client.send('matchEnd', { ...this.finalResult, rejoined: true });
           if (this.creditResult && this.creditResult.userId === auth.userId) client.send('pongmp:credit', this.creditResult.state);
@@ -293,10 +309,13 @@ export class GameRoom extends Room {
   // Fast path: a dropped connection can resume the SAME session with its
   // reconnection token. The seat doesn't depend on it — the heartbeat decides
   // presence, and joinRoom from a new connection takes the seat back.
+  // Only a connection that still holds a seat may resume; one that was
+  // replaced (taken over by a newer connection) just goes.
   onDrop(client: Client) {
     const slot = this.gameJoined.find(p => p.sessionId === client.sessionId);
-    if (slot) this.markGone(slot);                    // shown away at once (as FIFA)
-    const held: any = this.allowReconnection(client, MATCH_SEAT_HOLD_MS / 1000);
+    if (!slot) return;
+    this.markGone(slot);                              // shown away at once (as FIFA)
+    const held: any = this.allowReconnection(client, MATCH_RESUME_SECONDS);
     if (held?.reject) this.held.set(client.sessionId, held);
     const done = () => { if (this.held.get(client.sessionId) === held) this.held.delete(client.sessionId); };
     held?.then?.(done, done);
@@ -331,6 +350,16 @@ export class GameRoom extends Room {
 
   private rematchAvailable() {
     return !!this.finalResult && !!this.creditResult && !this.abandoned;
+  }
+
+  // Decided while some players were away: the lobby sends each of them here
+  // once to see the result (metadata.unseen), then no more.
+  private setOverMetadata() {
+    this.setMetadata({ over: true, unseen: this.gameJoined.filter(p => p.away).map(p => p.userId) });
+  }
+  private markResultSeen(userId: number) {
+    const unseen: number[] = (this.metadata as any)?.unseen || [];
+    if (unseen.includes(userId)) this.setMetadata({ over: true, unseen: unseen.filter(id => id !== userId) });
   }
 
   private markGone(slot: PlayerSlot) {
@@ -391,7 +420,7 @@ export class GameRoom extends Room {
     console.log('[match] ' + this.roomId + ': both players away — play stopped');
     this.gs = null;
     this.abandoned = true;
-    this.setMetadata({ over: true });
+    this.setOverMetadata();
     this.broadcast('opponentLeft');
   }
 
@@ -855,7 +884,7 @@ export class GameRoom extends Room {
     };
     this.broadcast('matchEnd', this.finalResult);
     this.gs = null;
-    this.setMetadata({ over: true });
+    this.setOverMetadata();
 
     // Auto-credit replaces the old "$8 — claim by PayPal" flow: the winner's
     // tenten.run account gets the agreed prize ($5 or $10), once.
