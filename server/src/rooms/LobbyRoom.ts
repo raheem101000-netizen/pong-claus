@@ -115,7 +115,6 @@ export class LobbyRoom extends Room {
   private userRoom = new Map<number, string>();       // account → room code it holds a seat in
   private userMatch = new Map<number, string>();      // account → game_room it was launched into
   private held = new Map<string, { reject: (e?: any) => void }>(); // pending token resumes, by connection
-  private pendingDeletion = new Map<string, ReturnType<typeof setTimeout>>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   // Every lobby connection must be a logged-in tenten.run account.
@@ -234,10 +233,6 @@ export class LobbyRoom extends Room {
         pick,
         lastSeen: Date.now(), away: false, awaySince: 0
       };
-      if (this.pendingDeletion.has(code)) {
-        clearTimeout(this.pendingDeletion.get(code));
-        this.pendingDeletion.delete(code);
-      }
       if (Object.keys(room.players).length === 0) { pd.master = true; room.master = auth.userId; }
       // Someone new at the table: any earlier Ready was for a different pairing.
       for (const p of Object.values(room.players)) p.ready = false;
@@ -500,18 +495,9 @@ export class LobbyRoom extends Room {
     }
 
     if (Object.keys(room.players).length === 0) {
-      if (!room.started) {
-        const t = setTimeout(() => {
-          if (this.lobbyRooms[code] && Object.keys(this.lobbyRooms[code].players).length === 0) {
-            delete this.lobbyRooms[code];
-            this.broadcastList();
-          }
-          this.pendingDeletion.delete(code);
-        }, 5 * 60 * 1000);
-        this.pendingDeletion.set(code, t);
-      } else {
-        delete this.lobbyRooms[code];
-      }
+      // The last player left: the room goes at once (as FIFA), and the list
+      // below is updated for everyone.
+      delete this.lobbyRooms[code];
     } else if (room.master === userId) {
       const next = Object.values(room.players).find(p => !p.away) || Object.values(room.players)[0];
       this.setMaster(room, next);
@@ -626,13 +612,16 @@ export class LobbyRoom extends Room {
     this.sendToRoom(room, 'room:state', serializeRoom(room));
   }
 
-  // The match this account was launched into, if it's still being played.
+  // The match this account was launched into, if it's still being played —
+  // or if it ended while the account was away and it hasn't seen the result
+  // yet (the match page shows it once, then sends it back to the lobby).
   private async liveMatchOf(userId: number): Promise<string | null> {
     const roomId = this.userMatch.get(userId);
     if (!roomId) return null;
     try {
       const [listing] = await matchMaker.query({ name: "game_room", roomId });
-      if (listing && !listing.metadata?.over) return roomId;
+      const unseen: number[] = Array.isArray(listing?.metadata?.unseen) ? listing.metadata.unseen : [];
+      if (listing && (!listing.metadata?.over || unseen.includes(userId))) return roomId;
     } catch (_) {}
     this.userMatch.delete(userId);
     return null;
