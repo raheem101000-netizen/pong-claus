@@ -246,8 +246,9 @@ function connect() {
     document.getElementById('room-code-display').textContent = code;
     document.getElementById('role-label').textContent = 'YOU ARE PLAYER 1 — BOTTOM PADDLE';
   });
-  socket.on('roomJoined', ({ code, role, myName: serverName, paddlePos }) => {
+  socket.on('roomJoined', ({ code, role, myName: serverName, paddlePos, prize }) => {
     myRole = role;
+    if (prize) matchPrize = prize;   // the prize both players agreed on in the lobby
     meReconnecting = false; updateConnBanner();
     if (code) currentRoomCode = code;
     if (serverName) myName = serverName;
@@ -311,7 +312,7 @@ function connect() {
       returnToLobbySoon();
     }
     if (iWon) {
-      document.getElementById('mr-credit').textContent = 'Adding your prize…';
+      document.getElementById('mr-credit').textContent = matchPrize ? 'Adding your $' + matchPrize + ' prize…' : 'Adding your prize…';
       document.getElementById('mr-credit').style.display = 'block';
     }
   });
@@ -354,6 +355,7 @@ function connect() {
 }
 // After a match that ended without us: count down, then the lobby.
 let lobbyReturnTimer = null;
+let matchPrize = null;   // e.g. "10.00" — set by the server on join
 function returnToLobbySoon(seconds) {
   if (lobbyReturnTimer) return;
   let n = seconds || 6;

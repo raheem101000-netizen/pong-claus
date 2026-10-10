@@ -1,6 +1,7 @@
 import { Room, Client, matchMaker } from "@colyseus/core";
 import { authenticateGameToken, PongAuth } from "../auth";
 import { issueLaunchTicket } from "../launchTickets";
+import { Prize, PrizeMode, asPrize, asPrizeMode } from "../prizes";
 
 // ── Account-owned seats (same model as FIFA's FifaLobby / Kurver) ─────────────
 // A seat belongs to the ACCOUNT (userId), not to a connection. The same
@@ -28,12 +29,20 @@ const SEATS_PER_ROOM = 2;
 const REMATCH_CANCEL_MS = Number(process.env.PONG_REMATCH_CANCEL_MS) || 30_000;
 const CHAT_HISTORY_MAX = 100;
 
+// ── Prize (same rules as FIFA's FifaLobby) ───────────────────────────────────
+// Every room is created as a $5 room, a $10 room, or "both" (the two players
+// agree on $5 or $10 in the room). The server owns prizeMode, each player's
+// pick and each player's ready state. Ready is only accepted while both picks
+// are the same; any prize change clears both players' Ready; the match
+// launches only with both ready on one prize, which the game_room credits.
+
 interface PlayerData {
   id: string;        // the connection currently (or last) holding this seat
   userId: number;    // real tenten.run account (from the login handoff token) — owns the seat
   name: string;
   ready: boolean;
   master: boolean;
+  pick: Prize | null; // the prize this player wants (null: host of a "both" room who hasn't chosen yet)
   color: string;
   connected: boolean; // a live connection is attached (false from the moment the server sees it drop)
   lastSeen: number;  // last heartbeat from the seat's connection (ms epoch)
@@ -50,7 +59,10 @@ interface LobbyRoomData {
   players: Record<number, PlayerData>; // by account
   started: boolean;
   kicked: Set<number>;       // accounts the host removed; they can't rejoin this room
-  chat: { player: string; content: string }[]; // kept for the room's life, across matches and rematches
+  chat: { player: string; content: string; system?: true }[]; // kept for the room's life, across matches and rematches
+  // "5" / "10": fixed prize (only the host can change it); "both": each player picks.
+  prizeMode: PrizeMode;
+  lastPrize: Prize | null;   // the prize of the last match launched (a rematch starts both players on it)
   matchId: string | null;    // the game_room launched from this room (while started)
   // Rematch pressed by one player, waiting for the other. Only both presses
   // reset the room for a new match; one press changes nothing else.
@@ -68,14 +80,22 @@ function generateCode(rooms: Record<string, LobbyRoomData>): string {
 }
 
 function serializePlayer(p: PlayerData) {
-  return { id: p.id, name: p.name, ready: p.ready, master: p.master, color: p.color, away: p.away };
+  return { id: p.id, name: p.name, ready: p.ready, master: p.master, color: p.color, away: p.away, pick: p.pick };
+}
+
+// The prize both players want, or null (fewer than two, a pick missing, or they differ).
+function agreedPrize(r: LobbyRoomData): Prize | null {
+  const players = Object.values(r.players);
+  if (players.length < SEATS_PER_ROOM) return null;
+  const first = players[0].pick;
+  return first && players.every(p => p.pick === first) ? first : null;
 }
 
 function serializeRoom(r: LobbyRoomData) {
   const players = Object.values(r.players);
   return {
     id: r.code, code: r.code, name: r.name, open: r.open, locked: !!r.password,
-    master: r.players[r.master]?.id ?? null, started: r.started,
+    master: r.players[r.master]?.id ?? null, started: r.started, prizeMode: r.prizeMode,
     players: players.map(serializePlayer),
     rematch: r.rematch ? {
       pending: true,
@@ -141,6 +161,8 @@ export class LobbyRoom extends Room {
       const priv = data?.open === false;
       const password = priv && typeof data?.password === 'string' ? data.password.slice(0, ROOM_PASSWORD_MAX) : '';
       if (priv && !password.trim()) { client.send('room:error', { message: 'Enter a password for a private room' }); return; }
+      const prizeMode = asPrizeMode(data?.prizeMode);
+      if (!prizeMode) { client.send('room:error', { message: 'Pick a prize first' }); return; }
       // One seat per account: creating a room gives up a seat held elsewhere.
       this.releaseAccountSeat(auth.userId);
       this.userMatch.delete(auth.userId);
@@ -151,13 +173,16 @@ export class LobbyRoom extends Room {
         name: auth.displayName || 'Player 1',
         color: data.player?.color || '#b450ff',
         ready: false, master: true, connected: true,
+        // Fixed room: the host's pick is the room's prize; "both": no pick yet.
+        pick: prizeMode === 'both' ? null : Number(prizeMode) as Prize,
         lastSeen: Date.now(), away: false, awaySince: 0
       };
       const room: LobbyRoomData = {
         code, name,
         open: !priv, password: priv ? password : null, master: auth.userId,
         players: { [auth.userId]: pd }, started: false, kicked: new Set<number>(),
-        chat: [], matchId: null, rematch: null
+        chat: [], matchId: null, rematch: null,
+        prizeMode, lastPrize: null
       };
       this.lobbyRooms[code] = room;
       this.bindSeat(client, room, pd);
@@ -187,6 +212,17 @@ export class LobbyRoom extends Room {
         client.send('room:error', { message: data?.password ? 'Wrong password' : 'This room is private — enter its password' }); return;
       }
 
+      // The new seat's prize. Fixed room: joining means agreeing to it.
+      // "both" room: the joiner must bring a pick (the page asks first); an
+      // empty room's next player becomes host and may start with none.
+      const becomesHost = Object.keys(room.players).length === 0;
+      let pick: Prize | null = null;
+      if (room.prizeMode !== 'both') pick = Number(room.prizeMode) as Prize;
+      else if (!becomesHost) {
+        pick = asPrize(data?.prize);
+        if (!pick) { client.send('room:pick-prize', { code: room.code, message: 'The host is open to both. Pick the prize' }); return; }
+      }
+
       this.releaseAccountSeat(auth.userId);
       this.userMatch.delete(auth.userId);
       const pd: PlayerData = {
@@ -195,6 +231,7 @@ export class LobbyRoom extends Room {
         name: auth.displayName || 'Player 2',
         color: data.player?.color || '#4488FF',
         ready: false, master: false, connected: true,
+        pick,
         lastSeen: Date.now(), away: false, awaySince: 0
       };
       if (this.pendingDeletion.has(code)) {
@@ -202,6 +239,8 @@ export class LobbyRoom extends Room {
         this.pendingDeletion.delete(code);
       }
       if (Object.keys(room.players).length === 0) { pd.master = true; room.master = auth.userId; }
+      // Someone new at the table: any earlier Ready was for a different pairing.
+      for (const p of Object.values(room.players)) p.ready = false;
       room.players[auth.userId] = pd;
       this.bindSeat(client, room, pd);
       client.send('room:joined', { room: serializeRoom(room), player: serializePlayer(pd), chat: room.chat });
@@ -214,9 +253,44 @@ export class LobbyRoom extends Room {
       const seat = this.seatOf(client);
       if (!seat) return;
       if (seat.room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
+      if (seat.room.started) return;
+      // Ready means "I accept the prize showing right now": only once both
+      // players are here and want the same prize.
+      if (!agreedPrize(seat.room)) {
+        client.send('room:error', { message: Object.keys(seat.room.players).length < SEATS_PER_ROOM ? 'Need a second player first' : 'Agree on a prize before pressing Ready' });
+        return;
+      }
       seat.pd.ready = true;
       this.sendToRoom(seat.room, 'room:player:ready', { player: serializePlayer(seat.pd) });
       this.sendToRoom(seat.room, 'room:state', serializeRoom(seat.room));
+    });
+
+    // A player changes the prize. "both" room: anyone, their own pick only.
+    // Fixed room: only the host, and it changes the room's prize (both picks).
+    // Any real change clears Ready for BOTH players.
+    this.onMessage("room:prize", (client: Client, data: any) => {
+      const seat = this.seatOf(client);
+      if (!seat) return;
+      const { room, pd } = seat;
+      if (room.started) return;
+      if (room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
+      const prize = asPrize(data?.prize);
+      if (!prize) { client.send('room:error', { message: 'Pick $5 or $10' }); return; }
+      if (room.prizeMode === 'both') {
+        if (pd.pick === prize) return;
+        pd.pick = prize;
+      } else {
+        if (room.master !== pd.userId) { client.send('room:error', { message: 'Only the host can change the prize' }); return; }
+        if (room.prizeMode === String(prize)) return;
+        room.prizeMode = String(prize) as PrizeMode;
+        for (const p of Object.values(room.players)) p.pick = prize;
+        const line = { player: '', content: `${pd.name} changed the prize to $${prize}`, system: true as const };
+        this.pushChat(room, line);
+        this.sendToRoom(room, 'room:talk', line);
+        this.broadcastList();
+      }
+      for (const p of Object.values(room.players)) p.ready = false;
+      this.sendToRoom(room, 'room:state', serializeRoom(room));
     });
 
     this.onMessage("room:launch", async (client: Client) => {
@@ -226,14 +300,16 @@ export class LobbyRoom extends Room {
       if (room.started || room.master !== seat.pd.userId) return;
       if (room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
       const players = Object.values(room.players);
-      // Pong is 1v1: a match needs its 2 players, and the non-host player must
-      // have pressed Ready (the host starts instead of readying). No payment.
+      // Pong is 1v1: a match needs its 2 players, both Ready on the same prize
+      // (the host too — Ready is accepting the prize). No payment yet.
       if (players.length < SEATS_PER_ROOM) { client.send('room:error', { message: 'Need 2 players' }); return; }
       // Nobody starts a match for a player who isn't there.
       const away = players.filter(p => p.away).map(p => p.name);
       if (away.length) { client.send('room:error', { message: 'Waiting for ' + away.join(', ') + ' to come back' }); return; }
-      if (!players.filter(p => p.userId !== room.master).every(p => p.ready)) {
-        client.send('room:error', { message: 'Waiting for your opponent to be ready' }); return;
+      const agreed = agreedPrize(room);
+      if (!agreed) { client.send('room:error', { message: 'Agree on a prize first' }); return; }
+      if (!players.every(p => p.ready)) {
+        client.send('room:error', { message: 'Waiting for both players to be ready' }); return;
       }
 
       room.started = true; // no second launch while the match room is being created
@@ -244,7 +320,9 @@ export class LobbyRoom extends Room {
           launchTicket: issueLaunchTicket(), // proves this match came from a lobby, not a client
           allowedUserIds: players.map(p => p.userId),
           lobbyRoomId: this.roomId,          // for the rematch handshake
+          agreedPrize: agreed,               // the prize both were ready on — the winner is credited this
         });
+        room.lastPrize = agreed;
         this.sendToRoom(room, 'room:game:start', {
           code: gameRoom.roomId,
           players: players.map(serializePlayer)
@@ -287,8 +365,7 @@ export class LobbyRoom extends Room {
       const seat = this.seatOf(client);
       if (!seat) return;
       const msg = { player: seat.pd.name || 'Unknown', content: String(data?.content || '').slice(0, 200) };
-      seat.room.chat.push(msg);
-      if (seat.room.chat.length > CHAT_HISTORY_MAX) seat.room.chat.splice(0, seat.room.chat.length - CHAT_HISTORY_MAX);
+      this.pushChat(seat.room, msg);
       this.sendToRoom(seat.room, 'room:talk', msg);
     });
 
@@ -415,6 +492,7 @@ export class LobbyRoom extends Room {
     if (h) { this.held.delete(pd.id); h.reject(false); }
     const code = room.code;
 
+    for (const p of Object.values(room.players)) p.ready = false;   // a Ready was for the old pairing
     this.sendToRoom(room, 'room:player:leave', { id: pd.id });
     if (room.rematch) {
       room.rematch = null;
@@ -513,6 +591,9 @@ export class LobbyRoom extends Room {
       this.userRoom.set(p.userId, room.code);
       // Grace to get from the match page back to the room.
       p.connected = true; p.lastSeen = now; p.away = false; p.awaySince = 0;
+      // Same prize setting; in a "both" room both start on the prize they just played for.
+      p.pick = room.prizeMode === 'both' ? room.lastPrize : Number(room.prizeMode) as Prize;
+      p.ready = false;
     }
     console.log(`[lobby] rematch requested in room ${room.code} by account ${userId}`);
     // A player already on the room list (not in a room) is brought in now.
@@ -564,8 +645,14 @@ export class LobbyRoom extends Room {
       .filter(r => !r.started)
       .map(r => ({
         id: r.code, name: r.name, open: r.open, locked: !!r.password,
-        players: Object.keys(r.players).length
+        players: Object.keys(r.players).length,
+        prizeMode: r.prizeMode
       }));
+  }
+
+  private pushChat(room: LobbyRoomData, msg: LobbyRoomData['chat'][number]) {
+    room.chat.push(msg);
+    if (room.chat.length > CHAT_HISTORY_MAX) room.chat.splice(0, room.chat.length - CHAT_HISTORY_MAX);
   }
 
   private broadcastList() {
