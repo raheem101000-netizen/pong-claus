@@ -136,6 +136,26 @@ td.room-enter{text-align:right;}
 .pz-field input::placeholder{color:rgba(255,255,255,0.25);}
 .pz-modal-btns{display:flex;gap:8px;margin-top:20px;}
 .pz-error-inline{font-size:12px;color:#FF5555;min-height:16px;margin-top:6px;}
+
+/* PRIZE (same rules and wording as FIFA's lobby) */
+.prize-tag{display:inline-block;font-size:12px;font-weight:700;padding:3px 9px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);color:#fff;white-space:nowrap;vertical-align:middle;margin-right:10px;}
+.prize-tag.gold{color:#FFD24A;border-color:rgba(255,210,74,0.6);background:rgba(255,210,74,0.12);}
+.prize-both{display:inline-flex;flex-direction:column;align-items:center;border:1.5px solid #FFD24A;border-radius:6px;padding:3px 8px;color:#FFD24A;line-height:1.2;white-space:nowrap;vertical-align:middle;margin-right:10px;}
+.prize-both b{font-size:9px;font-weight:700;letter-spacing:1px;}
+.prize-both span{font-size:10px;color:rgba(255,210,74,0.75);}
+.prize-opts{display:flex;flex-direction:column;gap:8px;}
+.prize-opt{display:flex;justify-content:space-between;align-items:center;text-align:left;padding:11px 14px;}
+.prize-opt small{font-size:11px;font-weight:500;opacity:.8;}
+.prize-opt.gold-opt.active{background:rgba(255,210,74,0.12);border-color:rgba(255,210,74,0.6);color:#FFD24A;}
+.pick-msg{font-size:13px;color:rgba(255,255,255,0.7);line-height:1.5;margin-bottom:14px;}
+.ready-prize{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.85);border:1px solid rgba(255,255,255,0.18);}
+.ready-open{background:rgba(255,210,74,0.08);color:#FFD24A;border:1px solid rgba(255,210,74,0.45);}
+.change-btn{background:none;border:1px solid rgba(180,80,255,0.5);color:#b450ff;border-radius:6px;padding:3px 8px;margin-left:6px;font-size:11px;font-weight:700;font-family:'Space Grotesk',sans-serif;cursor:pointer;white-space:nowrap;}
+.change-btn:hover{background:rgba(180,80,255,0.15);}
+.p-ready-cell .ready-badge{display:inline-block;margin:2px 0 2px 4px;}
+.prize-status{font-size:13px;line-height:1.5;color:rgba(255,255,255,0.6);margin:-12px 0 18px;}
+.prize-status.ok{color:#4CFF6C;}
+.chat-prize{color:rgba(255,210,74,0.85);font-style:italic;}
 </style>
 </head>
 <body>
@@ -199,12 +219,13 @@ td.room-enter{text-align:right;}
           <tr>
             <th></th>
             <th>NAME</th>
-            <th style="text-align:right">READY?</th>
+            <th style="text-align:right">STATUS</th>
             <th></th>
           </tr>
         </thead>
         <tbody id="players-tbody"></tbody>
       </table>
+      <p class="prize-status" id="prize-status"></p>
 
       <p class="room-notice">Rooms stay open about 10 minutes. If no one joins — or you step away and come back — your room may still be here; if it's closed, just create a new one.</p>
 
@@ -263,6 +284,13 @@ td.room-enter{text-align:right;}
       <button class="toggle-btn" id="toggle-private">Private</button>
     </div>
     <div class="pz-field" id="modal-pass-field" style="display:none;"><label>PASSWORD</label><input id="modal-password" type="text" maxlength="20" placeholder="Room password" autocomplete="off"></div>
+    <div class="pz-field"><label>PRIZE</label>
+      <div class="prize-opts" id="create-prize-opts">
+        <button type="button" class="toggle-btn prize-opt" data-mode="5"><span data-win="5"></span><small data-fee="5"></small></button>
+        <button type="button" class="toggle-btn prize-opt gold-opt" data-mode="10"><span data-win="10"></span><small data-fee="10"></small></button>
+        <button type="button" class="toggle-btn prize-opt gold-opt" data-mode="both"><span>Open to both</span><small>Agree on $5 or $10 in the room</small></button>
+      </div>
+    </div>
     <div class="pz-error-inline" id="create-error"></div>
     <div class="pz-modal-btns">
       <button class="pz-btn pz-btn-accent" style="flex:1;" id="btn-modal-confirm">Create</button>
@@ -271,6 +299,24 @@ td.room-enter{text-align:right;}
   </div>
 </div>
 
+<!-- Pick a prize: joining a room that is open to both -->
+<div class="pz-modal-bg" id="pick-modal">
+  <div class="pz-modal">
+    <h3>PICK THE PRIZE</h3>
+    <div class="pick-msg">The host is open to both. Pick the prize</div>
+    <div class="prize-opts">
+      <button type="button" class="toggle-btn prize-opt" data-pick="5"><span data-win="5"></span><small data-fee="5"></small></button>
+      <button type="button" class="toggle-btn prize-opt gold-opt" data-pick="10"><span data-win="10"></span><small data-fee="10"></small></button>
+    </div>
+    <div class="pz-error-inline" id="pick-error"></div>
+    <div class="pz-modal-btns">
+      <button class="pz-btn pz-btn-ghost" style="flex:1;" id="btn-pick-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- The prize table (server/src/prizes.ts): prize and entry fee come from one place -->
+<script src="/prizes.js"></script>
 <script src="/colyseus-adapter.js"></script>
 <script>
 // TEMPORARY FREE-PLAY MODE — bypasses the $0.50 Stripe gate for multiplayer.
@@ -353,7 +399,10 @@ socket.on('room:superseded', ({message})=>{ setSuperseded(true); backToList(); s
 socket.on('connect_error', (e)=>{ status('Cannot connect to server','err'); if (e && (e.code === 401 || /log in|login has expired/i.test(e.message || ''))) { try { localStorage.removeItem('pongmp_auth'); sessionStorage.removeItem('pongmp_auth'); } catch (_) {} if (e.message) document.getElementById('login-gate-msg').textContent = e.message; document.getElementById('login-gate').style.display = 'flex'; } });
 socket.on('room:error', ({message})=>{ status(message,'err');
   if(document.getElementById('join-modal').classList.contains('open')) document.getElementById('join-error').textContent=message;
-  if(document.getElementById('modal-overlay').classList.contains('open')) document.getElementById('create-error').textContent=message; });
+  if(document.getElementById('modal-overlay').classList.contains('open')) document.getElementById('create-error').textContent=message;
+  if(document.getElementById('pick-modal').classList.contains('open')) document.getElementById('pick-error').textContent=message; });
+// Joining a room that is open to both: the server asks for our pick first.
+socket.on('room:pick-prize', ({code})=>openPickModal(code, lastJoin && lastJoin.code===code ? lastJoin.password : ''));
 
 socket.on('room:list', ({rooms})=>renderRoomList(rooms));
 socket.on('room:open',   ()=>socket.emit('room:list'));
@@ -364,7 +413,7 @@ socket.on('room:update', ()=>socket.emit('room:list'));
 socket.on('room:kicked', ({message})=>{ remember(null); backToList(); status(message||'You were removed by the host','err'); });
 socket.on('room:created', ({room,chat})=>{ renderChat(chat); setSuperseded(false); remember(room.code); setConnNotice(''); closeCreateModal(); myRoom=room; isMaster=true; isReady=false; showDetail(); renderDetail(room); status(room.open===false?('Room created — code: '+room.code):'Public room created','ok'); });
 // Joined — or our own seat handed back (rejoined): seat, ready state and host role kept.
-socket.on('room:joined',  ({room,player,rejoined,chat})=>{ renderChat(chat); setSuperseded(false); remember(room.code); setConnNotice(''); closeJoinModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=!!(player&&player.ready); showDetail(); renderDetail(room); status(rejoined?('Back in room '+room.code):('Joined room '+room.code),'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
+socket.on('room:joined',  ({room,player,rejoined,chat})=>{ renderChat(chat); setSuperseded(false); remember(room.code); setConnNotice(''); closeJoinModal(); closePickModal(); myRoom=room; isMaster=!!(player&&player.master); isReady=!!(player&&player.ready); showDetail(); renderDetail(room); status(rejoined?('Back in room '+room.code):('Joined room '+room.code),'ok'); if(pendingReady){ pendingReady=false; isReady=true; socket.emit('room:ready'); updateActions(); status('Payment confirmed — ready!','ok'); } });
 socket.on('room:state',   room=>{
   if(!myRoom || myRoom.code!==room.code) return;
   myRoom=room;
@@ -377,10 +426,10 @@ socket.on('room:player:join',  ({player})=>{ sysMsg(player.name+' joined'); stat
 socket.on('room:player:leave', ()=>{ sysMsg('A player left'); updateActions(); });
 socket.on('room:player:ready', ({player})=>status(player.name+' is ready!','ok'));
 socket.on('room:master', ({master})=>{ if(master===socket.id){ isMaster=true; updateActions(); status('You are now host','ok'); } });
-socket.on('room:talk', ({player,content})=>addMsg(player,content));
+socket.on('room:talk', (m)=>chatLine(m));
 // Rematch: both players must press. Accepted → back to the normal Ready → Start flow.
 socket.on('room:rematch', ({accepted,cancelled})=>{
-  if(accepted){ sysMsg('Rematch on!'); status(isMaster?'Rematch on — start once your opponent is ready':'Rematch on — press Ready','ok'); }
+  if(accepted){ sysMsg('Rematch on!'); status('Rematch on — agree on the prize and press Ready.','ok'); }
   if(cancelled){ sysMsg(cancelled); setConnNotice(cancelled); status(cancelled,'err'); }
 });
 document.getElementById('btn-rematch').onclick=()=>{ if(myRoom&&myRoom.rematch) socket.emit('room:rematch'); };
@@ -405,7 +454,7 @@ function renderRoomList(rooms) {
       <td class="room-name">${esc(r.name)}${r.locked ? ' <span style="color:#FFB400;font-size:10px;letter-spacing:.5px;vertical-align:middle;">PRIVATE</span>' : ''}</td>
       <td class="room-players">${r.players} player${r.players!==1?'s':''}</td>
       <td class="room-enter">
-        ${full
+        ${prizeTagHtml(r.prizeMode)}${full
           ? '<button class="room-enter-btn spectate" disabled>In Game</button>'
           : r.locked
             ? `<button class="room-enter-btn" onclick="openJoinModal('${esc(r.id)}', true)">Join</button>`
@@ -415,7 +464,10 @@ function renderRoomList(rooms) {
   });
 }
 
+// The last join attempt, so the prize pick (room open to both) can repeat it.
+let lastJoin = null;
 function joinRoom(id) {
+  lastJoin={code:id,password:''};
   socket.emit('room:join',{room:id});
 }
 
@@ -438,11 +490,12 @@ function renderPlayers(room) {
     const tr=document.createElement('tr');
     const isMe=p.id===socket.id;
     const away=p.away?' <span class="ready-badge ready-no" style="color:#FFB400;border-color:rgba(255,180,0,0.4);">Away</span>':'';
-    const badge=(p.master
-      ?'<span class="ready-badge ready-host">HOST</span>'
-      :p.ready
-        ?'<span class="ready-badge ready-yes">✓ Ready</span>'
-        :'<span class="ready-badge ready-no">Not ready</span>')+away;
+    // Each name shows the player's prize state: "Open to both" (no pick yet),
+    // "Wants $X", or "Ready · $X". Only your own name gets controls: in a
+    // "both" room you pick/Change your prize; in a fixed room only the host
+    // can Change the room's prize.
+    const badge=(p.master?'<span class="ready-badge ready-host">HOST</span>':'')
+      +prizeStateTag(p)+(isMe && !room.rematch ? prizeControls(room,p) : '')+away;
     // The host sees ✕ to remove the other player.
     const kick=(isMaster && !p.master)?`<button class="kick-btn" title="Remove from room" onclick="kickPlayer('${esc(p.id)}')">✕</button>`:'';
     tr.innerHTML=`
@@ -457,13 +510,70 @@ function renderPlayers(room) {
     tr.innerHTML='<td colspan="3" class="p-empty">Waiting for opponent...</td>';
     tbody.appendChild(tr);
   }
-  const readyCount=players.filter(p=>p.ready).length;
   const awayNames=players.filter(p=>p.away).map(p=>p.name);
-  document.getElementById('ready-status').textContent=awayNames.length?('Waiting for '+awayNames.join(', ')+' to come back'):(readyCount+'/2 ready');
+  document.getElementById('ready-status').textContent=awayNames.length?('Waiting for '+awayNames.join(', ')+' to come back'):'';
+  renderPrizeStatus(room);
+}
+
+// ── Prizes ───────────────────────────────────────────────────────────────────
+// $5 (entry $2.99) and $10 (entry $5.99), from the server's one table (/prizes.js).
+const PRIZES = window.PONG_PRIZES || {};
+function feeOf(v){ return '$'+((PRIZES[v]||{}).entryFee||'?'); }
+document.querySelectorAll('[data-win]').forEach(el=>{ el.textContent='Win $'+el.dataset.win; });
+document.querySelectorAll('[data-fee]').forEach(el=>{ el.textContent='Entry '+feeOf(el.dataset.fee); });
+// The prize tag shown next to a room in the list.
+function prizeTagHtml(mode){
+  if(mode==='both') return '<span class="prize-both"><b>OPEN TO BOTH</b><span>$5 or $10</span></span>';
+  if(mode==='10') return '<span class="prize-tag gold">$10</span>';
+  if(mode==='5') return '<span class="prize-tag">$5</span>';
+  return '';
+}
+function prizeStateTag(p){
+  if(!p.pick) return '<span class="ready-badge ready-open">Open to both</span>';
+  if(p.ready) return '<span class="ready-badge ready-yes">Ready · $'+p.pick+'</span>';
+  return '<span class="ready-badge ready-prize">Wants $'+p.pick+'</span>';
+}
+function prizeControls(room,me){
+  const both=room.prizeMode==='both';
+  if(!both && !me.master) return '';
+  if(both && !me.pick) return '<button class="change-btn" onclick="sendPrize(5)">$5</button><button class="change-btn" onclick="sendPrize(10)">$10</button>';
+  const other=me.pick===10?5:10;
+  return '<button class="change-btn" title="Switch to $'+other+'" onclick="sendPrize('+other+')">Change</button>';
+}
+function sendPrize(prize){ if(myRoom) socket.emit('room:prize',{prize}); }
+// The prize both players want (null: fewer than two, a pick missing, or different picks).
+function agreedPrize(room){
+  const ps=(room&&room.players)||[];
+  if(ps.length<2||!ps[0].pick) return null;
+  return ps.every(p=>p.pick===ps[0].pick)?ps[0].pick:null;
+}
+function renderPrizeStatus(room){
+  const el=document.getElementById('prize-status');
+  const ps=room.players||[];
+  let text='', ok=false;
+  if(room.rematch) text='';
+  else if(ps.some(p=>!p.pick)) text='Waiting for '+ps.find(p=>!p.pick).name+' to choose a prize.';
+  else if(ps.length<2) text='Waiting for an opponent.';
+  else {
+    const host=ps.find(p=>p.master)||ps[0], joiner=ps.find(p=>p!==host);
+    const agreed=agreedPrize(room);
+    if(!agreed) text='Not agreed yet: '+host.name+' wants $'+host.pick+', '+joiner.name+' wants $'+joiner.pick+'.';
+    else if(ps.every(p=>p.ready)){ text='Both ready. Entry '+feeOf(agreed)+' each.'; ok=true; }
+    else { text='Agreed on $'+agreed+'. Press Ready.'; ok=true; }
+  }
+  el.textContent=text;
+  el.classList.toggle('ok',ok);
+  el.style.display=text?'block':'none';
 }
 
 // Chat history from the server (kept for the room's life, across matches).
-function renderChat(chat){ if(!Array.isArray(chat)) return; document.getElementById('chat-msgs').innerHTML=''; chat.forEach(m=>addMsg(m.player,m.content)); }
+function renderChat(chat){ if(!Array.isArray(chat)) return; document.getElementById('chat-msgs').innerHTML=''; chat.forEach(chatLine); }
+// A chat message, or a line the room itself wrote (e.g. "Sam changed the prize to $10").
+function chatLine(m){
+  if(!m) return;
+  if(!m.system) return addMsg(m.player,m.content);
+  const box=document.getElementById('chat-msgs'); const d=document.createElement('div'); d.className='chat-line chat-prize'; d.textContent='· '+m.content; box.appendChild(d); box.scrollTop=box.scrollHeight;
+}
 function renderRematch(){
   const box=document.getElementById('rematch-box'), btn=document.getElementById('btn-rematch'), txt=document.getElementById('rematch-text');
   const r=myRoom&&myRoom.rematch;
@@ -482,17 +592,19 @@ function updateActions() {
   if(myRoom.rematch){ btnReady.style.display='none'; btnStart.style.display='none'; return; }
   const players=myRoom.players||[];
   const hasGuest=players.length===2;
-  // Ready-check (no payment): the guest presses Ready; the host's Start is
-  // enabled once the guest is in and ready (the server enforces the same).
-  const guestReady=hasGuest && players.filter(p=>!p.master).every(p=>p.ready);
+  // Ready (both players, host included) only once both want the same prize:
+  // pressing it accepts the prize showing. The host's Start unlocks once both
+  // are ready (the server enforces the same).
+  const agreed=agreedPrize(myRoom);
+  const allReady=hasGuest && !!agreed && players.every(p=>p.ready);
   // Nobody starts a match for a player who isn't there (the server enforces it too).
   const away=players.filter(p=>p.away).map(p=>p.name);
-  btnReady.style.display=isMaster?'none':'inline-block';
+  btnReady.style.display=agreed?'inline-block':'none';
   btnStart.style.display=isMaster?'inline-block':'none';
-  btnStart.disabled=!guestReady || away.length>0;
-  btnStart.title=away.length?('Waiting for '+away.join(', ')+' to come back'):guestReady?'':(hasGuest?'Waiting for your opponent to be ready':'Waiting for an opponent');
-  if(isReady){ btnReady.textContent='✓ Ready'; btnReady.classList.add('is-ready'); }
-  else { btnReady.textContent='Ready?'; btnReady.classList.remove('is-ready'); }
+  btnStart.disabled=!allReady || away.length>0;
+  btnStart.title=away.length?('Waiting for '+away.join(', ')+' to come back'):allReady?'':(!hasGuest?'Waiting for an opponent':!agreed?'Agree on a prize first':'Waiting for both players to be ready');
+  if(isReady){ btnReady.textContent='✓ Ready'+(agreed?' · $'+agreed:''); btnReady.classList.add('is-ready'); }
+  else { btnReady.textContent='Ready?'+(agreed?' · $'+agreed:''); btnReady.classList.remove('is-ready'); }
 }
 
 function addMsg(player,content){ const box=document.getElementById('chat-msgs'); const d=document.createElement('div'); d.className='chat-line'; d.innerHTML=`<span class="chat-author">${player}:</span> ${content}`; box.appendChild(d); box.scrollTop=box.scrollHeight; }
@@ -534,7 +646,8 @@ document.getElementById('btn-create').onclick=()=>{
   document.getElementById('modal-password').value='';
   document.getElementById('create-error').textContent='';
   setRoomType(true);
-  closeJoinModal();
+  setCreatePrize(null);   // nothing preselected: the player must choose
+  closeJoinModal(); closePickModal();
   document.getElementById('modal-overlay').classList.add('open');
   setTimeout(()=>document.getElementById('modal-name').focus(),50);
 };
@@ -550,17 +663,42 @@ function createRoom(){
   const err=document.getElementById('create-error');
   if(!name){ err.textContent='Enter a room name'; return; }
   if(!roomIsPublic && !password.trim()){ err.textContent='Enter a password for a private room'; return; }
+  if(!createPrizeMode){ err.textContent='Pick a prize first'; return; }
   err.textContent='';
   myRoomPassword=password;
-  socket.emit('room:create',{name,open:roomIsPublic,password});
+  socket.emit('room:create',{name,open:roomIsPublic,password,prizeMode:createPrizeMode});
 }
+let createPrizeMode=null;
+function setCreatePrize(mode){
+  createPrizeMode=mode;
+  document.querySelectorAll('#create-prize-opts .prize-opt').forEach(b=>b.classList.toggle('active', b.dataset.mode===mode));
+  const err=document.getElementById('create-error'); if(/prize/i.test(err.textContent)) err.textContent='';
+}
+document.querySelectorAll('#create-prize-opts .prize-opt').forEach(b=>{ b.onclick=()=>setCreatePrize(b.dataset.mode); });
+// Pick a prize (room open to both), then repeat the join with it.
+let pendingPick=null;
+function openPickModal(code,password){
+  closeJoinModal(); closeCreateModal();
+  pendingPick={code,password:password||''};
+  document.getElementById('pick-error').textContent='';
+  document.getElementById('pick-modal').classList.add('open');
+}
+function closePickModal(){ document.getElementById('pick-modal').classList.remove('open'); }
+document.querySelectorAll('#pick-modal [data-pick]').forEach(b=>{ b.onclick=()=>{
+  if(!pendingPick) return;
+  document.getElementById('pick-error').textContent='';
+  myRoomPassword=pendingPick.password;
+  socket.emit('room:join',{code:pendingPick.code,password:pendingPick.password,prize:Number(b.dataset.pick)});
+}; });
+document.getElementById('btn-pick-cancel').onclick=closePickModal;
+document.getElementById('pick-modal').addEventListener('click',e=>{ if(e.target.id==='pick-modal') closePickModal(); });
 
 document.getElementById('toggle-public').onclick=()=>setRoomType(true);
 document.getElementById('toggle-private').onclick=()=>setRoomType(false);
 
 document.getElementById('btn-joincode').onclick=joinByCode;
 document.getElementById('code-input').addEventListener('keydown',e=>{ if(e.key==='Enter') joinByCode(); });
-function joinByCode(){ const code=document.getElementById('code-input').value.trim(); const password=document.getElementById('join-password').value; if(!/^\d{4}$/.test(code)){ document.getElementById('join-error').textContent='Enter the 4-digit room code'; return; } document.getElementById('join-error').textContent=''; myRoomPassword=password; socket.emit('room:join',{code,password}); }
+function joinByCode(){ const code=document.getElementById('code-input').value.trim(); const password=document.getElementById('join-password').value; if(!/^\d{4}$/.test(code)){ document.getElementById('join-error').textContent='Enter the 4-digit room code'; return; } document.getElementById('join-error').textContent=''; myRoomPassword=password; lastJoin={code,password}; socket.emit('room:join',{code,password}); }
 // Join with Code popup (same behaviour as Puz Royale's: opens on the button,
 // closes on Cancel / backdrop / a successful join; errors show inside it).
 // openJoinModal(code, true) = a private room clicked in the list: code filled in, asks for the password (as Puz).

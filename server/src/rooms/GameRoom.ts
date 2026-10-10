@@ -2,6 +2,7 @@ import { Room, Client, matchMaker } from "@colyseus/core";
 import { authenticateGameToken, PongAuth } from "../auth";
 import { consumeLaunchTicket } from "../launchTickets";
 import { creditPongWin } from "../payouts";
+import { Prize, asPrize, prizeAmount, entryFeeFor } from "../prizes";
 
 const TICK_RATE     = 60;
 // First to 10 wins. PONG_POINTS_TO_WIN overrides it for local tests only (never set in production).
@@ -132,6 +133,10 @@ export class GameRoom extends Room {
   private abandoned = false;
   // The lobby this match was launched from (rematch handshake).
   private lobbyRoomId: string | null = null;
+  // The prize both players were ready on when the lobby launched this match
+  // (5 or 10). The winner is credited exactly this; each player's entry fee
+  // for it is entryFee() (not charged yet).
+  private agreedPrize: Prize = 5;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private lastPresentAt = Date.now();
   private createdAt = Date.now();
@@ -152,6 +157,9 @@ export class GameRoom extends Room {
       throw new Error("A match needs exactly two different players");
     }
     this.allowedUserIds = ids;
+    const agreed = asPrize(options?.agreedPrize);
+    if (!agreed) throw new Error("A match needs an agreed prize");
+    this.agreedPrize = agreed;
     this.lobbyRoomId = typeof options?.lobbyRoomId === 'string' ? options.lobbyRoomId : null;
     this.setMetadata({ over: false });
     this.sweepTimer = setInterval(() => this.sweep(), SWEEP_MS);
@@ -180,7 +188,8 @@ export class GameRoom extends Room {
         const idx = this.gameJoined.indexOf(prior);
         client.send('roomJoined', {
           code: this.roomId, role: idx === 0 ? 'p1' : 'p2',
-          myName: name, paddlePos: idx === 0 ? 'BOTTOM' : 'TOP'
+          myName: name, paddlePos: idx === 0 ? 'BOTTOM' : 'TOP',
+          prize: prizeAmount(this.agreedPrize)
         });
         const other = this.gameJoined[idx === 0 ? 1 : 0];
         if (other) client.send('opponentName', { name: other.name });
@@ -206,7 +215,8 @@ export class GameRoom extends Room {
 
       client.send('roomJoined', {
         code: this.roomId, role,
-        myName: name, paddlePos: role === 'p1' ? 'BOTTOM' : 'TOP'
+        myName: name, paddlePos: role === 'p1' ? 'BOTTOM' : 'TOP',
+        prize: prizeAmount(this.agreedPrize)   // the agreed prize, for the winner's message
       });
 
       if (this.gameJoined.length === 2) {
@@ -311,6 +321,12 @@ export class GameRoom extends Room {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.gameInterval) clearInterval(this.gameInterval);
     if (this.lobbyRoomId) matchMaker.remoteRoomCall(this.lobbyRoomId, 'matchClosed' as any, [this.roomId]).catch(() => {});
+  }
+
+  // Entry fee each player pays for this match's prize — the hook for when
+  // entry-fee charging is built (nothing is charged yet).
+  public entryFee(): string {
+    return entryFeeFor(this.agreedPrize);
   }
 
   private rematchAvailable() {
@@ -842,7 +858,7 @@ export class GameRoom extends Room {
     this.setMetadata({ over: true });
 
     // Auto-credit replaces the old "$8 — claim by PayPal" flow: the winner's
-    // tenten.run account gets the server-set prize, once.
+    // tenten.run account gets the agreed prize ($5 or $10), once.
     if (this.matchSettled) return;
     this.matchSettled = true;
     const winnerSlot = this.gameJoined[p1won ? 0 : 1];
@@ -855,17 +871,17 @@ export class GameRoom extends Room {
     for (const delay of [0, 1000, 3000]) {
       if (delay) await new Promise(r => setTimeout(r, delay));
       try {
-        const out = await creditPongWin({ roomId: this.roomId, winnerUserId: winner.userId, loserUserId: loser ? loser.userId : null });
+        const out = await creditPongWin({ roomId: this.roomId, winnerUserId: winner.userId, loserUserId: loser ? loser.userId : null, prize: this.agreedPrize });
         console.log(`[pongmp-credit] match ${this.roomId} → user ${winner.userId}: ${out.status}` +
           (out.status === 'credited' ? ` $${out.amount} (${out.balanceBefore} → ${out.balanceAfter})` : '') +
           (out.status === 'disabled' ? ' — payouts are OFF (PONGMP_PAYOUTS_ENABLED=false)' : ''));
-        state = out.status === 'disabled' ? { status: 'disabled' } : { status: 'credited', amount: '5.00' };
+        state = out.status === 'disabled' ? { status: 'disabled' } : { status: 'credited', amount: prizeAmount(this.agreedPrize) };
         break;
       } catch (e) {
         console.error(`[pongmp-credit] attempt failed for match ${this.roomId} → user ${winner.userId}:`, e);
       }
     }
-    if (state.status === 'failed') console.error(`[pongmp-credit] GAVE UP — match ${this.roomId}, winner user ${winner.userId} is owed $5.00`);
+    if (state.status === 'failed') console.error(`[pongmp-credit] GAVE UP — match ${this.roomId}, winner user ${winner.userId} is owed $${prizeAmount(this.agreedPrize)}`);
     // winner.sessionId tracks the current session even across a reconnect.
     this.creditResult = { userId: winner.userId, state };
     const winnerClient = this.clients.find(c => c.sessionId === winner.sessionId);

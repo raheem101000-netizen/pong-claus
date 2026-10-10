@@ -6,6 +6,7 @@ import { Pool } from "pg";
 import Stripe from "stripe";
 import { LobbyRoom } from "./rooms/LobbyRoom";
 import { GameRoom } from "./rooms/GameRoom";
+import { prizesClientScript } from "./prizes";
 
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 const neonPool = process.env.DATABASE_URL
@@ -155,6 +156,11 @@ export const server = defineServer({
         });
 
         app.use("/colyseus", monitor());
+
+        // The prize table (prizes.ts) for the lobby page — one source for labels and credits.
+        app.get("/prizes.js", (_req, res) => {
+            res.type("application/javascript").set("Cache-Control", "no-cache").send(prizesClientScript());
+        });
 
         // Root → rooms lobby (must be before express.static to win over Vite's index.html)
         app.get('/', (_req, res) => {
