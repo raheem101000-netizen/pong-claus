@@ -446,12 +446,13 @@ export class LobbyRoom extends Room {
     this.touch(room, pd, false);
   }
 
-  // Same account back on a new connection: keeps seat, ready state, host role.
+  // Same account back on a new connection: keeps seat, ready state, host role;
+  // the room's chat is sent again for the fresh page.
   private takeOver(client: Client, room: LobbyRoomData) {
     const pd = room.players[(client.auth as PongAuth).userId];
     this.bindSeat(client, room, pd);
     console.log(`[lobby] account ${pd.userId} took its seat back in room ${room.code}`);
-    client.send('room:joined', { room: serializeRoom(room), player: serializePlayer(pd), rejoined: true });
+    client.send('room:joined', { room: serializeRoom(room), player: serializePlayer(pd), rejoined: true, chat: room.chat });
     this.sendToRoom(room, 'room:state', serializeRoom(room));
     this.broadcastList();
   }
@@ -511,7 +512,12 @@ export class LobbyRoom extends Room {
     if (prev) prev.master = false;
     room.master = next.userId;
     next.master = true;
+    // A new host: both players confirm the prize again before a Start.
+    for (const p of Object.values(room.players)) p.ready = false;
     this.sendToRoom(room, 'room:master', { master: next.id });
+    const line = { player: '', content: `${next.name} is now the host`, system: true as const };
+    this.pushChat(room, line);
+    this.sendToRoom(room, 'room:talk', line);
   }
 
   // Presence check: quiet seats show as away, an away host hands over, an
