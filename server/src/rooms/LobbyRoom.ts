@@ -1,6 +1,7 @@
 import { Room, Client, matchMaker } from "@colyseus/core";
 import { authenticateGameToken, PongAuth } from "../auth";
 import { issueLaunchTicket } from "../launchTickets";
+import { notifyNewRoom } from "../pushNotifications";
 import { Prize, PrizeMode, asPrize, asPrizeMode } from "../prizes";
 
 // ── Account-owned seats (same model as FIFA's FifaLobby / Kurver) ─────────────
@@ -187,6 +188,17 @@ export class LobbyRoom extends Room {
       this.bindSeat(client, room, pd);
       client.send('room:created', { room: serializeRoom(room), player: serializePlayer(pd), chat: room.chat });
       this.broadcastList();
+      // Match alert to everyone who turned them on at tenten.run — public rooms
+      // only (a rematch reuses its room, so it never comes through here).
+      // Fire-and-forget: never delays or breaks the room.
+      if (!priv) {
+        void notifyNewRoom('pong', {
+          title: '🏓 Pong — opponent waiting',
+          body: 'Tap to play — win real cash',
+          url: '/?play=pongmp',
+          tag: 'pong-new-room',
+        });
+      }
     });
 
     // Old Stripe flow (unused while FREE_PLAY): a player leaving for checkout
