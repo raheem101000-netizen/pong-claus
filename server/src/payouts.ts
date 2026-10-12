@@ -1,5 +1,6 @@
 import { pool } from "./db";
-import { Prize, prizeAmount } from "./prizes";
+import { Prize, prizeAmount, entryFeeFor } from "./prizes";
+import { recordSettledMatch } from "./settledMatches";
 
 /**
  * Pong multiplayer win credit — same pattern as FIFA / Puz Royale / Kurver:
@@ -74,6 +75,12 @@ export async function creditPongWin(opts: { roomId: string; winnerUserId: number
         [opts.loserUserId, PONGMP_GAME, `${key}:loss`, PONGMP_TIER, PONGMP_MATCH_NUMBER]
       );
     }
+    // The settled-match record (creator program): same transaction, same key.
+    await recordSettledMatch(client, {
+      matchKey: key, game: "pong", winnerUserId: opts.winnerUserId,
+      loserUserIds: opts.loserUserId ? [opts.loserUserId] : [],
+      prize: amount, entryPrice: entryFeeFor(opts.prize), payingPlayers: opts.loserUserId ? 2 : 1,
+    });
     await client.query("COMMIT");
     return { status: "credited", amount, balanceBefore: Number(before.rows[0].balance).toFixed(2), balanceAfter: Number(after.rows[0].balance).toFixed(2) };
   } catch (e) {
