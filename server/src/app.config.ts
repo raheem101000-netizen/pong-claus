@@ -5,6 +5,7 @@ import path from "path";
 import { Pool } from "pg";
 import Stripe from "stripe";
 import { migrateSettledMatches } from "./settledMatches";
+import { migratePushSubscriptions } from "./pushNotifications";
 import { LobbyRoom } from "./rooms/LobbyRoom";
 import { GameRoom } from "./rooms/GameRoom";
 import { prizesClientScript } from "./prizes";
@@ -177,6 +178,7 @@ export const server = defineServer({
 
     beforeListen: async () => {
         await migrateSettledMatches();
+        await migratePushSubscriptions();
         if (neonPool) {
             await neonPool.query(`
                 CREATE TABLE IF NOT EXISTS prize_claims (
