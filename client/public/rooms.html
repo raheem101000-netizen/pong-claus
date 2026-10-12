@@ -384,6 +384,8 @@ socket.on('connect', ()=>{
 socket.on('disconnect', ()=>status('Disconnected','err'));
 socket.on('drop', ()=>{ status('Reconnecting…','err'); setConnNotice(myRoom ? 'Connection lost — reconnecting. Your seat is kept.' : 'Connection lost — reconnecting…'); });
 socket.on('resume', ()=>{ setConnNotice(''); status('Reconnected','ok'); });
+// The room's whole chat again after a resume (redrawn, so nothing is doubled).
+socket.on('room:chat', ({chat})=>renderChat(chat));
 socket.on('room:rejoin:none', ()=>{
   const had = myRoom || remembered();
   remember(null); setConnNotice('');

@@ -392,13 +392,15 @@ export class LobbyRoom extends Room {
     held?.then?.(done, done);
   }
 
-  // Back after a drop: present again; resend their room and the list.
+  // Back after a drop: present again; resend their room, its chat (lines
+  // sent while this connection was down never reached it) and the list.
   onReconnect(client: Client) {
     const seat = this.seatOf(client);
     if (seat) {
       seat.pd.connected = true;
       this.touch(seat.room, seat.pd);
       client.send('room:state', serializeRoom(seat.room));
+      client.send('room:chat', { chat: seat.room.chat });
     }
     client.send('room:list', { rooms: this.serializeList() });
   }
