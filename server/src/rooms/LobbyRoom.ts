@@ -753,13 +753,23 @@ export class LobbyRoom extends Room {
     if (!this.lobbyRooms[room.code]) return;
     const why = NO_FAULT_WHY[reason] || "The match couldn't start, so it was cancelled.";
     const other = NO_FAULT_OTHER[reason] || `${message} — the match didn't start.`;
-    const line = { player: '', content: `${message} — the match didn't start.` + (credited.length ? " Any entry paid has been refunded to that player's Refund Balance." : ''), system: true as const };
+    // An expired payment window isn't a cancelled match: the room stays, and
+    // pressing READY again opens a new window (the player who paid is covered
+    // by their Refund Balance; the other pays by card).
+    const expired = reason === 'payment_timeout';
+    const line = { player: '', content: expired
+      ? `Payment expired — ${message}. Press READY to try again.`
+      : `${message} — the match didn't start.` + (credited.length ? " Any entry paid has been refunded to that player's Refund Balance." : ''), system: true as const };
     this.pushChat(room, line);
     this.sendToRoom(room, 'room:talk', line);
     for (const p of Object.values(room.players)) {
       const c = this.clients.find(cl => cl.sessionId === p.id);
       c?.send('room:pay:cancelled', {
-        message: credited.includes(p.userId) ? `${why} Your $${entry} has been refunded to your Refund Balance — use it to enter another game at the same price.` : other,
+        message: expired
+          ? (credited.includes(p.userId)
+            ? `Payment expired — your opponent took too long. Your $${entry} is safe in your Refund Balance. Press READY to go again — it's already covered.`
+            : "Payment expired — you didn't pay in time. Press READY to pay and try again.")
+          : (credited.includes(p.userId) ? `${why} Your $${entry} has been refunded to your Refund Balance — use it to enter another game at the same price.` : other),
       });
     }
     this.sendToRoom(room, 'room:state', serializeRoom(room));
