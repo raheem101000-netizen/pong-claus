@@ -2,7 +2,11 @@ import { Room, Client, matchMaker } from "@colyseus/core";
 import { authenticateGameToken, PongAuth } from "../auth";
 import { issueLaunchTicket } from "../launchTickets";
 import { notifyNewRoom } from "../pushNotifications";
-import { Prize, PrizeMode, asPrize, asPrizeMode } from "../prizes";
+import { Prize, PrizeMode, asPrize, asPrizeMode, entryFeeFor, prizeAmount } from "../prizes";
+import {
+  entryFeesRequested, entryFeesReady, toCents, openPayment, cancelAttempt, attachMatch, refundRow,
+  attemptRows, onPaymentConfirmed, recoverStranded, PAY_WINDOW_MS, PaymentRow,
+} from "../entryPayments";
 
 // ── Account-owned seats (same model as FIFA's FifaLobby / Kurver) ─────────────
 // A seat belongs to the ACCOUNT (userId), not to a connection. The same
@@ -68,6 +72,23 @@ interface LobbyRoomData {
   // Rematch pressed by one player, waiting for the other. Only both presses
   // reset the room for a new match; one press changes nothing else.
   rematch: { by: Set<number> } | null;
+  // Entry fees (entryPayments.ts): the payment window opened by the host's
+  // Start — the agreed prize is locked, each player pays the server-computed
+  // entry; the match launches when every player's payment is confirmed by
+  // Stripe's webhook. Nothing about the room can change while it's open.
+  payment: PaymentWindow | null;
+}
+
+interface PaymentWindow {
+  attemptId: string;
+  prize: Prize;
+  entry: string;                 // dollars per player, e.g. "2.99" (from prizes.ts)
+  amountCents: number;
+  deadline: number;              // ms epoch
+  urls: Map<number, string>;     // account → its Stripe Checkout
+  paid: Set<number>;             // accounts whose payment the webhook confirmed
+  timer: ReturnType<typeof setTimeout> | null;
+  closing: boolean;              // launching or being cancelled
 }
 
 const ROOM_NAME_MAX = 24;      // same as Puz Royale's room name field
@@ -104,6 +125,11 @@ function serializeRoom(r: LobbyRoomData) {
       names: players.filter(p => r.rematch!.by.has(p.userId)).map(p => p.name),
       waiting: players.filter(p => !r.rematch!.by.has(p.userId)).map(p => p.name),
     } : null,
+    payment: r.payment ? {
+      prize: r.payment.prize, entry: r.payment.entry, deadline: r.payment.deadline,
+      paid: players.filter(p => r.payment!.paid.has(p.userId)).map(p => p.id),
+      waiting: players.filter(p => !r.payment!.paid.has(p.userId)).map(p => p.name),
+    } : null,
   };
 }
 
@@ -117,6 +143,7 @@ export class LobbyRoom extends Room {
   private userMatch = new Map<number, string>();      // account → game_room it was launched into
   private held = new Map<string, { reject: (e?: any) => void }>(); // pending token resumes, by connection
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private recoverTimer: ReturnType<typeof setInterval> | null = null;
 
   // Every lobby connection must be a logged-in tenten.run account.
   static async onAuth(token: string, options: any) {
@@ -125,6 +152,12 @@ export class LobbyRoom extends Room {
 
   onCreate() {
     this.sweepTimer = setInterval(() => this.sweep(), SWEEP_MS);
+    // Entry fees: payments the webhook confirms come here; money left with no
+    // match (a restart mid-window) is refunded at boot and every minute.
+    onPaymentConfirmed(row => this.paymentConfirmed(row));
+    const recover = () => recoverStranded("pong", id => this.liveAttempt(id) !== null)
+      .catch(e => console.error("[entry-fees] recovery sweep failed:", e));
+    if (entryFeesReady()) { setTimeout(recover, 5_000); this.recoverTimer = setInterval(recover, 60_000); }
 
     this.onMessage("room:list", (client: Client) => {
       client.send("room:list", { rooms: this.serializeList() });
@@ -181,7 +214,7 @@ export class LobbyRoom extends Room {
         code, name,
         open: !priv, password: priv ? password : null, master: auth.userId,
         players: { [auth.userId]: pd }, started: false, kicked: new Set<number>(),
-        chat: [], matchId: null, rematch: null,
+        chat: [], matchId: null, rematch: null, payment: null,
         prizeMode, lastPrize: null
       };
       this.lobbyRooms[code] = room;
@@ -260,7 +293,7 @@ export class LobbyRoom extends Room {
       const seat = this.seatOf(client);
       if (!seat) return;
       if (seat.room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
-      if (seat.room.started) return;
+      if (seat.room.started || seat.room.payment) return;
       // Ready means "I accept the prize showing right now": only once both
       // players are here and want the same prize.
       if (!agreedPrize(seat.room)) {
@@ -280,6 +313,7 @@ export class LobbyRoom extends Room {
       if (!seat) return;
       const { room, pd } = seat;
       if (room.started) return;
+      if (room.payment) { client.send('room:error', { message: 'The prize is locked while entries are being paid' }); return; }
       if (room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
       const prize = asPrize(data?.prize);
       if (!prize) { client.send('room:error', { message: 'Pick $5 or $10' }); return; }
@@ -305,10 +339,11 @@ export class LobbyRoom extends Room {
       if (!seat) return;
       const { room } = seat;
       if (room.started || room.master !== seat.pd.userId) return;
+      if (room.payment) { client.send('room:error', { message: 'Waiting for both entries to be paid' }); return; }
       if (room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
       const players = Object.values(room.players);
       // Pong is 1v1: a match needs its 2 players, both Ready on the same prize
-      // (the host too — Ready is accepting the prize). No payment yet.
+      // (the host too — Ready is accepting the prize).
       if (players.length < SEATS_PER_ROOM) { client.send('room:error', { message: 'Need 2 players' }); return; }
       // Nobody starts a match for a player who isn't there.
       const away = players.filter(p => p.away).map(p => p.name);
@@ -319,37 +354,12 @@ export class LobbyRoom extends Room {
         client.send('room:error', { message: 'Waiting for both players to be ready' }); return;
       }
 
-      room.started = true; // no second launch while the match room is being created
-      try {
-        // A new game_room per match (rematches included): its room id is the
-        // match's credit key ('pongmp:<roomId>'), so each match pays once.
-        const gameRoom = await matchMaker.createRoom("game_room", {
-          launchTicket: issueLaunchTicket(), // proves this match came from a lobby, not a client
-          allowedUserIds: players.map(p => p.userId),
-          lobbyRoomId: this.roomId,          // for the rematch handshake
-          agreedPrize: agreed,               // the prize both were ready on — the winner is credited this
-        });
-        room.lastPrize = agreed;
-        this.sendToRoom(room, 'room:game:start', {
-          code: gameRoom.roomId,
-          players: players.map(serializePlayer)
-        });
-        // The seats now live in the match room (account-owned there too). A
-        // page that reloads into the lobby is sent back to the match while it's
-        // still being played (room:rejoin → room:match). The room itself (its
-        // players and chat) is kept, hidden from the list, for a rematch; it's
-        // dropped when the match room closes without one.
-        room.matchId = gameRoom.roomId;
-        for (const p of players) {
-          this.userMatch.set(p.userId, gameRoom.roomId);
-          if (this.clientRoom.get(p.id) === room.code) this.clientRoom.delete(p.id);
-          if (this.userRoom.get(p.userId) === room.code) this.userRoom.delete(p.userId);
-        }
-        this.broadcastList();
-      } catch (e) {
-        room.started = false;
-        client.send('room:error', { message: 'Failed to start game' });
+      if (entryFeesRequested()) {
+        if (!entryFeesReady()) { client.send('room:error', { message: 'Payments are unavailable right now — try again later' }); return; }
+        await this.openPaymentWindow(room, agreed);
+        return;
       }
+      await this.launchMatch(room, agreed, null, client);
     });
 
     // Host kick: only the host, never themselves; the removed player is told
@@ -363,6 +373,7 @@ export class LobbyRoom extends Room {
       const target = Object.values(room.players).find(p => p.id === targetId);
       if (!target) { client.send('room:error', { message: 'Player not found' }); return; }
       if (target.userId === seat!.pd.userId) { client.send('room:error', { message: "You can't remove yourself" }); return; }
+      if (room.payment) { client.send('room:error', { message: 'Not while entries are being paid' }); return; }
       room.kicked.add(target.userId);
       this.clients.find(c => c.sessionId === target.id)?.send('room:kicked', { message: 'You were removed by the host' });
       this.releaseSeat(room, target.userId);
@@ -413,6 +424,7 @@ export class LobbyRoom extends Room {
       this.touch(seat.room, seat.pd);
       client.send('room:state', serializeRoom(seat.room));
       client.send('room:chat', { chat: seat.room.chat });
+      this.sendPayPrompt(client, seat.room, seat.pd.userId);
     }
     client.send('room:list', { rooms: this.serializeList() });
   }
@@ -428,6 +440,7 @@ export class LobbyRoom extends Room {
 
   onDispose() {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
+    if (this.recoverTimer) clearInterval(this.recoverTimer);
   }
 
   // ── Seats ──────────────────────────────────────────────────────────────────
@@ -468,6 +481,7 @@ export class LobbyRoom extends Room {
     console.log(`[lobby] account ${pd.userId} took its seat back in room ${room.code}`);
     client.send('room:joined', { room: serializeRoom(room), player: serializePlayer(pd), rejoined: true, chat: room.chat });
     this.sendToRoom(room, 'room:state', serializeRoom(room));
+    this.sendPayPrompt(client, room, pd.userId);
     this.broadcastList();
   }
 
@@ -495,6 +509,7 @@ export class LobbyRoom extends Room {
   private releaseSeat(room: LobbyRoomData, userId: number) {
     const pd = room.players[userId];
     if (!pd) return;
+    if (room.payment) void this.cancelPaymentWindow(room, `${pd.name} left before the match started`, 'left_before_start');
     delete room.players[userId];
     if (this.clientRoom.get(pd.id) === room.code) this.clientRoom.delete(pd.id);
     if (this.userRoom.get(userId) === room.code) this.userRoom.delete(userId);
@@ -539,7 +554,9 @@ export class LobbyRoom extends Room {
   private sweep() {
     const now = Date.now();
     for (const room of Object.values(this.lobbyRooms)) {
-      if (room.started) continue;
+      // Started, or collecting entries (players are on Stripe's page, so
+      // their lobby tab is quiet): no away / handoff / release meanwhile.
+      if (room.started || room.payment) continue;
       let changed = false;
       for (const pd of Object.values(room.players)) {
         if (!pd.away && (!pd.connected || now - pd.lastSeen > AWAY_AFTER_MS)) { pd.away = true; pd.awaySince = now; changed = true; }
@@ -569,6 +586,170 @@ export class LobbyRoom extends Room {
         if (next) { this.setMaster(room, next); changed = true; }
       }
       if (changed) this.sendToRoom(room, 'room:state', serializeRoom(room));
+    }
+  }
+
+  // ── Entry fees ─────────────────────────────────────────────────────────────
+
+  // The host pressed Start with entry fees on: lock the agreed prize and open
+  // a Checkout for each player — amount from prizes.ts, nothing from the page.
+  private async openPaymentWindow(room: LobbyRoomData, prize: Prize) {
+    const players = Object.values(room.players);
+    const entry = entryFeeFor(prize);
+    const pw: PaymentWindow = {
+      attemptId: `pong-${room.code}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      prize, entry, amountCents: toCents(entry), deadline: Date.now() + PAY_WINDOW_MS,
+      urls: new Map(), paid: new Set(), timer: null, closing: false,
+    };
+    room.payment = pw;
+    const base = (process.env.BASE_URL || '').replace(/\/$/, '');
+    try {
+      for (const p of players) {
+        const { url } = await openPayment({
+          game: "pong", attemptId: pw.attemptId, userId: p.userId, amountCents: pw.amountCents, prize: prizeAmount(prize),
+          productName: `Pong 1v1 entry — $${prize} prize`,
+          successUrl: `${base}/rooms.html?paid=1`, cancelUrl: `${base}/rooms.html?paid=0`,
+        });
+        pw.urls.set(p.userId, url);
+      }
+    } catch (e) {
+      console.error(`[entry-fees] couldn't open payments for room ${room.code}:`, e);
+      await this.cancelPaymentWindow(room, 'Payments are unavailable right now — try again', 'system_error');
+      return;
+    }
+    if (room.payment !== pw) return;   // cancelled meanwhile (someone left)
+    pw.timer = setTimeout(() => {
+      const waiting = Object.values(room.players).filter(p => !pw.paid.has(p.userId)).map(p => p.name);
+      void this.cancelPaymentWindow(room, `${waiting.join(' and ') || 'A player'} didn't pay in time`, 'payment_timeout');
+    }, PAY_WINDOW_MS);
+    console.log(`[entry-fees] room ${room.code}: payment window ${pw.attemptId} — $${pw.entry} each for the $${prize} prize`);
+    const line = { player: '', content: `Entries: $${pw.entry} each for the $${prize} prize — the match starts once both are paid.`, system: true as const };
+    this.pushChat(room, line);
+    this.sendToRoom(room, 'room:talk', line);
+    this.sendToRoom(room, 'room:state', serializeRoom(room));
+    for (const p of players) {
+      const c = this.clients.find(cl => cl.sessionId === p.id);
+      if (c) this.sendPayPrompt(c, room, p.userId);
+    }
+  }
+
+  // This player's Checkout link (or "paid, waiting") while a window is open.
+  private sendPayPrompt(client: Client, room: LobbyRoomData, userId: number) {
+    const pw = room.payment;
+    if (!pw || pw.closing) return;
+    client.send('room:pay', {
+      prize: pw.prize, entry: pw.entry, deadline: pw.deadline,
+      paid: pw.paid.has(userId), url: pw.paid.has(userId) ? null : pw.urls.get(userId) || null,
+    });
+  }
+
+  private liveAttempt(attemptId: string): LobbyRoomData | null {
+    return Object.values(this.lobbyRooms).find(r => r.payment && r.payment.attemptId === attemptId && !r.payment.closing) || null;
+  }
+
+  // Stripe's webhook confirmed a payment. false = no live window for it (the
+  // caller refunds it).
+  private paymentConfirmed(row: PaymentRow): boolean {
+    if (row.game !== "pong") return false;
+    const room = this.liveAttempt(row.attempt_id);
+    if (!room || !room.players[row.user_id]) return false;
+    const pw = room.payment!;
+    pw.paid.add(row.user_id);
+    this.sendToRoom(room, 'room:state', serializeRoom(room));
+    const c = this.clients.find(cl => cl.sessionId === room.players[row.user_id]?.id);
+    if (c) this.sendPayPrompt(c, room, row.user_id);
+    const players = Object.values(room.players);
+    if (players.length === SEATS_PER_ROOM && players.every(p => pw.paid.has(p.userId))) {
+      pw.closing = true;
+      if (pw.timer) clearTimeout(pw.timer);
+      void this.launchMatch(room, pw.prize, pw, null);
+    }
+    return true;
+  }
+
+  // The window ends without a match: unpaid Checkouts closed, anyone who paid
+  // refunded (the match couldn't happen through no fault of theirs).
+  private async cancelPaymentWindow(room: LobbyRoomData, message: string, reason: string) {
+    const pw = room.payment;
+    if (!pw || pw.closing) return;
+    pw.closing = true;
+    if (pw.timer) clearTimeout(pw.timer);
+    room.payment = null;
+    for (const p of Object.values(room.players)) p.ready = false;
+    let refundedNames: string[] = [];
+    try {
+      const { refunded } = await cancelAttempt(pw.attemptId, reason);
+      refundedNames = refunded.map(id => room.players[id]?.name).filter(Boolean) as string[];
+    } catch (e) {
+      console.error(`[entry-fees] cancelling ${pw.attemptId} failed — the recovery sweep will refund any payment:`, e);
+    }
+    console.log(`[entry-fees] room ${room.code}: window ${pw.attemptId} cancelled (${reason})`);
+    const text = message + (refundedNames.length ? ` — ${refundedNames.join(' and ')}'s $${pw.entry} has been refunded.` : '. No one was charged.');
+    const line = { player: '', content: text, system: true as const };
+    if (this.lobbyRooms[room.code]) {
+      this.pushChat(room, line);
+      this.sendToRoom(room, 'room:talk', line);
+      this.sendToRoom(room, 'room:pay:cancelled', { message: text });
+      this.sendToRoom(room, 'room:state', serializeRoom(room));
+    }
+  }
+
+  // Start the match room. pw: the paid window it comes from (null: entry fees
+  // off). A failure after both paid is a system error: both are refunded.
+  private async launchMatch(room: LobbyRoomData, agreed: Prize, pw: PaymentWindow | null, client: Client | null) {
+    const players = Object.values(room.players);
+    room.started = true; // no second launch while the match room is being created
+    try {
+      // A new game_room per match (rematches included): its room id is the
+      // match's credit key ('pongmp:<roomId>'), so each match pays once.
+      const gameRoom = await matchMaker.createRoom("game_room", {
+        launchTicket: issueLaunchTicket(), // proves this match came from a lobby, not a client
+        allowedUserIds: players.map(p => p.userId),
+        lobbyRoomId: this.roomId,          // for the rematch handshake
+        agreedPrize: agreed,               // the prize both were ready on — the winner is credited this
+        entriesCharged: !!pw,              // both entries paid (entry fees on)
+      });
+      if (pw) {
+        room.payment = null;
+        await attachMatch(pw.attemptId, `pongmp:${gameRoom.roomId}`, 'Pong').catch(e =>
+          console.error(`[entry-fees] couldn't attach ${pw.attemptId} to match ${gameRoom.roomId}:`, e));
+        console.log(`[entry-fees] room ${room.code}: both paid $${pw.entry} — match ${gameRoom.roomId} started`);
+      }
+      room.lastPrize = agreed;
+      this.sendToRoom(room, 'room:game:start', {
+        code: gameRoom.roomId,
+        players: players.map(serializePlayer)
+      });
+      // The seats now live in the match room (account-owned there too). A
+      // page that reloads into the lobby is sent back to the match while it's
+      // still being played (room:rejoin → room:match). The room itself (its
+      // players and chat) is kept, hidden from the list, for a rematch; it's
+      // dropped when the match room closes without one.
+      room.matchId = gameRoom.roomId;
+      for (const p of players) {
+        this.userMatch.set(p.userId, gameRoom.roomId);
+        if (this.clientRoom.get(p.id) === room.code) this.clientRoom.delete(p.id);
+        if (this.userRoom.get(p.userId) === room.code) this.userRoom.delete(p.userId);
+      }
+      this.broadcastList();
+    } catch (e) {
+      room.started = false;
+      console.error(`[lobby] room ${room.code}: match room couldn't be created:`, e);
+      if (pw) {
+        room.payment = null;
+        for (const row of await attemptRows(pw.attemptId).catch(() => [] as PaymentRow[])) {
+          if (row.status === 'paid' && !row.match_key) await refundRow(row, 'match_start_failed');
+        }
+        for (const p of players) p.ready = false;
+        const text = `The match couldn't be started — both entries ($${pw.entry}) have been refunded. Try again.`;
+        const line = { player: '', content: text, system: true as const };
+        this.pushChat(room, line);
+        this.sendToRoom(room, 'room:talk', line);
+        this.sendToRoom(room, 'room:pay:cancelled', { message: text });
+        this.sendToRoom(room, 'room:state', serializeRoom(room));
+      } else {
+        client?.send('room:error', { message: 'Failed to start game' });
+      }
     }
   }
 

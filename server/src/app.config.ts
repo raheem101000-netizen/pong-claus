@@ -3,14 +3,13 @@ import { matchMaker } from "@colyseus/core";
 import express from "express";
 import path from "path";
 import { Pool } from "pg";
-import Stripe from "stripe";
 import { migrateSettledMatches } from "./settledMatches";
 import { migratePushSubscriptions } from "./pushNotifications";
+import { migrateMatchPayments, webhookHandler } from "./entryPayments";
 import { LobbyRoom } from "./rooms/LobbyRoom";
 import { GameRoom } from "./rooms/GameRoom";
 import { prizesClientScript } from "./prizes";
 
-const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 const neonPool = process.env.DATABASE_URL
     ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
     : null;
@@ -27,62 +26,10 @@ export const server = defineServer({
     },
 
     express: (app) => {
-        // Stripe webhook — raw body must be read before any JSON middleware
-        app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
-            const sig = req.headers["stripe-signature"] as string;
-            let event: Stripe.Event;
-            try {
-                event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET!);
-            } catch (err: any) {
-                res.status(400).send(`Webhook Error: ${err.message}`);
-                return;
-            }
-            if (event.type === "checkout.session.completed") {
-                const session = event.data.object as Stripe.Checkout.Session;
-                const mode = (session.metadata?.mode as string) || "multiplayer";
-                if (neonPool) {
-                    await neonPool.query(
-                        "INSERT INTO sessions (game, mode, amount, stripe_payment_id) VALUES ($1, $2, $3, $4)",
-                        ["Pong", mode, 4.99, session.payment_intent]
-                    ).catch(console.error);
-                }
-            }
-            res.json({ received: true });
-        });
-
-        // Solo checkout — $4.99
-        app.post("/create-solo-checkout", express.json(), async (req, res) => {
-            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
-            try {
-                const session = await stripe.checkout.sessions.create({
-                    payment_method_types: ["card"],
-                    line_items: [{ price_data: { currency: "usd", product_data: { name: "Pong Solo" }, unit_amount: 499 }, quantity: 1 }],
-                    mode: "payment",
-                    metadata: { mode: "solo" },
-                    success_url: `${process.env.BASE_URL}/pong-multiplayer.html?paid=true&session_id={CHECKOUT_SESSION_ID}`,
-                    cancel_url: `${process.env.BASE_URL}/`,
-                });
-                res.json({ url: session.url });
-            } catch (err: any) { res.status(500).json({ error: err.message }); }
-        });
-
-        // Multiplayer checkout — $4.99 (room_id + player_id passed through for post-payment return)
-        app.post("/create-multiplayer-checkout", express.json(), async (req, res) => {
-            if (!stripe) { res.status(503).json({ error: "Payments not configured" }); return; }
-            const { room_id, player_id } = req.body;
-            try {
-                const session = await stripe.checkout.sessions.create({
-                    payment_method_types: ["card"],
-                    line_items: [{ price_data: { currency: "usd", product_data: { name: "Pong Multiplayer — Test" }, unit_amount: 50 }, quantity: 1 }],
-                    mode: "payment",
-                    metadata: { mode: "multiplayer", room_id, player_id },
-                    success_url: `${process.env.BASE_URL}/rooms?paid=true&room=${room_id}&player=${encodeURIComponent(player_id)}&session_id={CHECKOUT_SESSION_ID}`,
-                    cancel_url: `${process.env.BASE_URL}/rooms`,
-                });
-                res.json({ url: session.url });
-            } catch (err: any) { res.status(500).json({ error: err.message }); }
-        });
+        // Stripe webhook for entry fees (entryPayments.ts) — raw body, so it's
+        // registered before any JSON middleware. The old $4.99 solo/multiplayer
+        // Checkout endpoints and their webhook are gone.
+        app.post("/stripe/webhook", express.raw({ type: "application/json" }), webhookHandler("pong"));
 
         // Winner submits name + PayPal email; admin pays within 48h
         app.post("/submit-prize-claim", express.json(), async (req, res) => {
@@ -179,6 +126,7 @@ export const server = defineServer({
     beforeListen: async () => {
         await migrateSettledMatches();
         await migratePushSubscriptions();
+        await migrateMatchPayments();
         if (neonPool) {
             await neonPool.query(`
                 CREATE TABLE IF NOT EXISTS prize_claims (

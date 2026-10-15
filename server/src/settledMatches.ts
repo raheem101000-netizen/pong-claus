@@ -65,6 +65,7 @@ export interface SettledMatch {
   prize: string;                    // dollars paid to the winner, e.g. "5.00"
   entryPrice: string;               // listed entry per player, e.g. "2.99"
   payingPlayers: number;
+  entriesCharged?: boolean;         // the entries were really paid (Stripe, entryPayments.ts)
 }
 
 /**
@@ -76,10 +77,10 @@ export async function recordSettledMatch(client: PoolClient, m: SettledMatch) {
   await client.query("SAVEPOINT settled_match");
   try {
     await client.query(
-      `INSERT INTO settled_matches (match_key, game, winner_user_id, prize, entry_price, paying_players, entry_total, margin)
-       VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::int, $5::numeric * $6::int, $5::numeric * $6::int - $4::numeric)
+      `INSERT INTO settled_matches (match_key, game, winner_user_id, prize, entry_price, paying_players, entry_total, margin, entries_charged)
+       VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::int, $5::numeric * $6::int, $5::numeric * $6::int - $4::numeric, $7)
        ON CONFLICT (match_key) DO NOTHING`,
-      [m.matchKey, m.game, m.winnerUserId, m.prize, m.entryPrice, m.payingPlayers]
+      [m.matchKey, m.game, m.winnerUserId, m.prize, m.entryPrice, m.payingPlayers, !!m.entriesCharged]
     );
     await client.query(
       `INSERT INTO settled_match_players (match_key, user_id, outcome) VALUES ($1, $2, 'won') ON CONFLICT DO NOTHING`,

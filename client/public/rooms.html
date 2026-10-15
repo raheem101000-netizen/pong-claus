@@ -96,6 +96,11 @@ td.room-enter{text-align:right;}
 /* ACTIONS */
 .room-actions{display:flex;gap:10px;align-items:center;}
 .rematch-box{display:none;margin:0 0 18px;padding:12px 16px;border-radius:10px;background:rgba(180,80,255,0.1);border:1px solid rgba(180,80,255,0.4);color:#e6ccff;font-size:14px;font-weight:600;}
+.pay-box{display:none;margin:0 0 18px;padding:14px 16px;border-radius:10px;background:rgba(255,210,74,0.08);border:1px solid rgba(255,210,74,0.5);color:#FFE7A0;font-size:14px;font-weight:600;line-height:1.45;}
+.pay-box .pay-btn{display:inline-block;margin-top:10px;background:#FFD24A;color:#1a1200;text-decoration:none;padding:10px 20px;font-size:14px;font-weight:700;border-radius:8px;}
+.pay-box .pay-btn:hover{opacity:.9;}
+.pay-box .pay-paid{display:inline-block;margin-top:8px;color:#4CFF6C;}
+.pay-box .pay-sub{margin-top:8px;font-size:12px;font-weight:500;color:rgba(255,231,160,0.7);}
 .rematch-box button{margin-left:12px;background:#b450ff;color:#fff;border:none;padding:8px 18px;font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:700;border-radius:8px;cursor:pointer;}
 .btn-ready{flex:1;background:#4CFF6C;color:#111;border:none;padding:12px 20px;font-family:'Space Grotesk',sans-serif;font-size:14px;font-weight:700;border-radius:8px;cursor:pointer;display:none;}
 .btn-ready:hover{background:#2ecc71;}
@@ -211,6 +216,8 @@ td.room-enter{text-align:right;}
         <div id="room-code-pass" style="display:none;font-size:11px;color:rgba(255,255,255,0.45);margin-top:4px;">Password: <span id="room-code-pw" style="color:#fff;"></span></div>
       </div>
 
+      <!-- Entry fees: the payment window after the host's Start (server: entryPayments.ts) -->
+      <div class="pay-box" id="pay-box"><div id="pay-text"></div><a class="pay-btn" id="btn-pay" href="#" style="display:none"></a><div class="pay-paid" id="pay-paid" style="display:none">✓ Your entry is paid</div><div class="pay-sub" id="pay-sub"></div></div>
       <div class="rematch-box" id="rematch-box"><span id="rematch-text"></span><button id="btn-rematch" style="display:none">REMATCH</button></div>
 
       <p class="players-count" id="players-count">No players</p>
@@ -319,12 +326,6 @@ td.room-enter{text-align:right;}
 <script src="/prizes.js"></script>
 <script src="/colyseus-adapter.js"></script>
 <script>
-// TEMPORARY FREE-PLAY MODE — bypasses the $0.50 Stripe gate for multiplayer.
-// Set to false (or delete this line) to restore normal payment. Nothing else needs to
-// change: /create-multiplayer-checkout and the Stripe webhook in app.config.ts are
-// untouched and still fully work — they're just unreached while this is true.
-const FREE_PLAY = true;
-
 // ── tenten.run login handoff ─────────────────────────────────────────────────
 // Same pattern as FIFA / Puz Royale / Kurver: tenten.run's Pong MULTIPLAYER
 // button issues a game_tokens token and redirects here with
@@ -419,6 +420,7 @@ socket.on('room:joined',  ({room,player,rejoined,chat})=>{ renderChat(chat); set
 socket.on('room:state',   room=>{
   if(!myRoom || myRoom.code!==room.code) return;
   myRoom=room;
+  if(!room.payment) payInfo=null;
   const me=(room.players||[]).find(p=>p.id===socket.id);
   if(!me){ remember(null); backToList(); return; }  // our seat is no longer in this room
   isMaster=!!me.master; isReady=!!me.ready;
@@ -434,6 +436,36 @@ socket.on('room:rematch', ({accepted,cancelled})=>{
   if(accepted){ sysMsg('Rematch on!'); status('Rematch on — agree on the prize and press Ready.','ok'); }
   if(cancelled){ sysMsg(cancelled); setConnNotice(cancelled); status(cancelled,'err'); }
 });
+// Entry fees: after the host's Start each player pays their entry on Stripe's
+// page (same tab — this page rejoins the seat when they come back). The amount
+// and the link come from the server; the match starts once Stripe has
+// confirmed both payments.
+let payInfo=null;
+socket.on('room:pay', p=>{ payInfo=p; renderPay(); updateActions(); });
+socket.on('room:pay:cancelled', ({message})=>{ payInfo=null; renderPay(); updateActions(); setConnNotice(message); status(message,'err'); });
+document.getElementById('btn-pay').onclick=()=>status('Opening secure payment…','ok');
+function renderPay(){
+  const box=document.getElementById('pay-box'), pw=myRoom&&myRoom.payment;
+  if(!pw || !payInfo){ box.style.display='none'; return; }
+  box.style.display='block';
+  document.getElementById('pay-text').textContent='Entry: $'+payInfo.entry+' each for the $'+payInfo.prize+' prize. The match starts as soon as both entries are paid.';
+  const btn=document.getElementById('btn-pay');
+  if(!payInfo.paid && payInfo.url){ btn.href=payInfo.url; btn.textContent='PAY $'+payInfo.entry+' →'; btn.style.display='inline-block'; }
+  else btn.style.display='none';
+  document.getElementById('pay-paid').style.display=payInfo.paid?'inline-block':'none';
+  const left=Math.max(0,Math.ceil((payInfo.deadline-Date.now())/1000));
+  const waiting=(pw.waiting||[]).filter(n=>n!==myName);
+  document.getElementById('pay-sub').textContent=(waiting.length?'Waiting for '+waiting.join(', ')+' · ':'')+left+'s left';
+}
+setInterval(()=>{ if(payInfo) renderPay(); },1000);
+// Back from Stripe's page (the seat is rejoined as usual).
+(function(){
+  const q=new URLSearchParams(location.search), paid=q.get('paid');
+  if(paid==null) return;
+  history.replaceState(null,'',location.pathname+location.hash);
+  if(paid==='1') status('Payment received — confirming with Stripe…','ok');
+  else status('Payment cancelled — you can still pay before the timer runs out.','err');
+})();
 document.getElementById('btn-rematch').onclick=()=>{ if(myRoom&&myRoom.rematch) socket.emit('room:rematch'); };
 socket.on('room:game:start', ({code})=>{ remember(null); status('Game starting!','ok'); setTimeout(()=>{ window.location.href='/pong-multiplayer.html?room='+code+'&name='+encodeURIComponent(myName); },600); });
 
@@ -592,6 +624,8 @@ function updateActions() {
   if(!myRoom) return;
   // Pending rematch: no Ready/Start until both players have pressed Rematch.
   if(myRoom.rematch){ btnReady.style.display='none'; btnStart.style.display='none'; return; }
+  // Entries being paid: nothing to press but Pay.
+  if(myRoom.payment){ btnReady.style.display='none'; btnStart.style.display='none'; renderPay(); return; }
   const players=myRoom.players||[];
   const hasGuest=players.length===2;
   // Ready (both players, host included) only once both want the same prize:
