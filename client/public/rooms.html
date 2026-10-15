@@ -446,6 +446,8 @@ socket.on('room:pay', p=>{
   payInfo=p; renderPay(); updateActions();
   if(p.go && p.url){ status('Opening secure payment…','ok'); window.location.href=p.url; }
 });
+// Play Credit paid the whole entry (no card).
+socket.on('room:pay:credit', ({message})=>{ status(message,'ok'); setConnNotice(message); });
 socket.on('room:pay:cancelled', ({message})=>{ payInfo=null; renderPay(); updateActions(); setConnNotice(message); status(message,'err'); });
 function mmss(sec){ return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'); }
 function renderPay(){
@@ -454,7 +456,7 @@ function renderPay(){
   box.style.display='block';
   const left=Math.max(0,Math.ceil((pw.deadline-Date.now())/1000));
   const iPaid=(pw.paid||[]).includes(socket.id);
-  document.getElementById('pay-text').textContent='You and your opponent have '+mmss(left)+' to pay — if either of you doesn\'t, any entry paid is refunded.';
+  document.getElementById('pay-text').textContent='You and your opponent have '+mmss(left)+' to pay — if either of you doesn\'t, any entry paid comes back to you as Play Credit.';
   document.getElementById('pay-paid').style.display=iPaid?'inline-block':'none';
   const waiting=(pw.waiting||[]).filter(n=>n!==myName);
   document.getElementById('pay-sub').textContent=iPaid
