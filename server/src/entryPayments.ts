@@ -32,7 +32,7 @@ import { pool } from "./db";
 export type Game = "pong" | "fifa" | "kurver";
 
 const MIGRATION_LOCK = 727274;   // the shared-table migration lock
-export const PAY_WINDOW_MS = Number(process.env.ENTRY_PAY_WINDOW_MS) || 90_000;   // from the first Ready: both players must have paid
+export const PAY_WINDOW_MS = Number(process.env.ENTRY_PAY_WINDOW_MS) || 180_000;   // 3 minutes from the first Ready: both players must have paid
 
 export interface PaymentRow {
   id: number;

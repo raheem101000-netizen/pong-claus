@@ -626,7 +626,7 @@ export class LobbyRoom extends Room {
   }
 
   // The payment window: the agreed prize is locked and both players have
-  // PAY_WINDOW_MS (90 s) from the first Ready to pay; if either doesn't, any
+  // PAY_WINDOW_MS (3 min) from the first Ready to pay; if either doesn't, any
   // entry paid is refunded.
   private openPaymentWindow(room: LobbyRoomData, prize: Prize): PaymentWindow {
     const entry = entryFeeFor(prize);
