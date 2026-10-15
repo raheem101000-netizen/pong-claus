@@ -38,7 +38,7 @@ export type CreditOutcome =
   | { status: "already_credited" }
   | { status: "disabled" };
 
-export async function creditPongWin(opts: { roomId: string; winnerUserId: number; loserUserId: number | null; prize: Prize }): Promise<CreditOutcome> {
+export async function creditPongWin(opts: { roomId: string; winnerUserId: number; loserUserId: number | null; prize: Prize; entriesCharged?: boolean }): Promise<CreditOutcome> {
   if (!payoutsEnabled()) return { status: "disabled" };
   const key = pongCreditKey(opts.roomId);
   const amount = prizeAmount(opts.prize);
@@ -79,7 +79,10 @@ export async function creditPongWin(opts: { roomId: string; winnerUserId: number
     await recordSettledMatch(client, {
       matchKey: key, game: "pong", winnerUserId: opts.winnerUserId,
       loserUserIds: opts.loserUserId ? [opts.loserUserId] : [],
-      prize: amount, entryPrice: entryFeeFor(opts.prize), payingPlayers: opts.loserUserId ? 2 : 1,
+      prize: amount, entryPrice: entryFeeFor(opts.prize),
+      // Charged matches: both players paid, whether or not the loser showed up.
+      payingPlayers: opts.entriesCharged ? 2 : (opts.loserUserId ? 2 : 1),
+      entriesCharged: !!opts.entriesCharged,
     });
     await client.query("COMMIT");
     return { status: "credited", amount, balanceBefore: Number(before.rows[0].balance).toFixed(2), balanceAfter: Number(after.rows[0].balance).toFixed(2) };

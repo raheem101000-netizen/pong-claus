@@ -51,6 +51,10 @@ const MATCH_RESUME_SECONDS = Number(process.env.PONG_MATCH_RESUME_SECONDS) || 60
 // one (silent mobile drop) doesn't keep a connection slot until the server's
 // pings give up on it.
 const RETIRED_CUTOFF_MS = 1_000;
+// Paid matches (both entries charged): a player who paid but never joins the
+// match room within this long loses to the one who did (walkover — the same
+// endMatch/credit path). Free matches keep the old behaviour.
+const NO_SHOW_AFTER_MS = Number(process.env.PONG_NO_SHOW_AFTER_MS) || 90_000;
 // Once decided, close after nobody has been here this long (as FIFA).
 const MATCH_DONE_LINGER_MS = 15 * 60_000;
 // Hard cap on a match room's life (as FIFA).
@@ -139,6 +143,7 @@ export class GameRoom extends Room {
   private creditResult: { userId: number; state: { status: string; amount?: string } } | null = null;
   // Play was stopped because both players were gone (no one to award).
   private abandoned = false;
+  private entriesCharged = false;   // both players paid their entry (entryPayments.ts)
   // The lobby this match was launched from (rematch handshake).
   private lobbyRoomId: string | null = null;
   // The prize both players were ready on when the lobby launched this match
@@ -169,6 +174,7 @@ export class GameRoom extends Room {
     if (!agreed) throw new Error("A match needs an agreed prize");
     this.agreedPrize = agreed;
     this.lobbyRoomId = typeof options?.lobbyRoomId === 'string' ? options.lobbyRoomId : null;
+    this.entriesCharged = options?.entriesCharged === true;
     this.setMetadata({ over: false });
     this.sweepTimer = setInterval(() => this.sweep(), SWEEP_MS);
 
@@ -398,6 +404,16 @@ export class GameRoom extends Room {
       console.log('[match] ' + this.roomId + ': nobody holding a seat — closing');
       this.setMetadata({ over: true });
       this.disconnect();
+      return;
+    }
+
+    // Paid match, one player here and the other never came: walkover.
+    if (this.entriesCharged && !this.gs && !this.finalResult && !this.abandoned && this.gameJoined.length === 1
+        && !this.gameJoined[0].away && now - this.createdAt > NO_SHOW_AFTER_MS) {
+      console.log('NO-SHOW WALKOVER: ' + this.gameJoined[0].name + ' wins (opponent never joined)');
+      if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
+      this.gs = initGameState();
+      this.endMatch('p1', true);
       return;
     }
 
@@ -900,7 +916,8 @@ export class GameRoom extends Room {
     for (const delay of [0, 1000, 3000]) {
       if (delay) await new Promise(r => setTimeout(r, delay));
       try {
-        const out = await creditPongWin({ roomId: this.roomId, winnerUserId: winner.userId, loserUserId: loser ? loser.userId : null, prize: this.agreedPrize });
+        const loserUserId = loser ? loser.userId : (this.allowedUserIds.find(id => id !== winner.userId) ?? null);
+        const out = await creditPongWin({ roomId: this.roomId, winnerUserId: winner.userId, loserUserId, prize: this.agreedPrize, entriesCharged: this.entriesCharged });
         console.log(`[pongmp-credit] match ${this.roomId} → user ${winner.userId}: ${out.status}` +
           (out.status === 'credited' ? ` $${out.amount} (${out.balanceBefore} → ${out.balanceAfter})` : '') +
           (out.status === 'disabled' ? ' — payouts are OFF (PONGMP_PAYOUTS_ENABLED=false)' : ''));
