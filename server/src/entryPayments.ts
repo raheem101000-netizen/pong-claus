@@ -9,7 +9,8 @@ import { pool } from "./db";
  *   match_payments: one row per player per payment ATTEMPT (attempt_id,
  *   user_id unique): who, which game/attempt, the server-computed amount, the
  *   Stripe Checkout session + PaymentIntent, and status
- *     pending → paid → (refunded)      or      pending → expired
+ *     pending → paid → (credited: Play Credit)   or   pending → expired
+ *   paid_with: 'card' (Stripe) or 'credit' (Play Credit)
  *   match_key ('pongmp:<roomId>') is filled in when the match starts.
  *
  * Rules (the money ones):
@@ -19,11 +20,12 @@ import { pool } from "./db";
  *    the browser coming back from Checkout proves nothing.
  *  - One row per player per attempt + Stripe idempotency keys: pressing Pay
  *    twice reuses the same Checkout, never a second charge.
- *  - Refunds happen ONLY when the match can't happen for a reason that isn't
- *    the payer's: the other player didn't pay in time / left before paying,
- *    or a system error (the match room couldn't be created, a payment landed
- *    for an attempt that no longer exists, a server restart). A player who
- *    paid and then quits / drops / loses is not refunded.
+ *  - Nothing is ever refunded to a card. When the match can't happen for a
+ *    reason that isn't the payer's (the other player didn't pay in time /
+ *    left before paying, a payment landed after the window, the match couldn't
+ *    start, a restart), the entry becomes the player's PLAY CREDIT (creditRow):
+ *    not cashable, spendable only on a whole entry (payWithCredit). A player
+ *    who paid and then quits / drops / loses gets nothing back.
  *
  * Off unless ENTRY_FEES_ENABLED=true (then STRIPE_SECRET_KEY and
  * STRIPE_WEBHOOK_SECRET are required, or paid matches refuse to start).
@@ -40,7 +42,8 @@ export interface PaymentRow {
   attempt_id: string;
   user_id: number;
   amount_cents: number;
-  status: "pending" | "paid" | "refunded" | "expired";
+  status: "pending" | "paid" | "refunded" | "expired" | "credited";
+  paid_with?: "card" | "credit";
   match_key: string | null;
   stripe_checkout_session_id: string | null;
   stripe_payment_intent_id: string | null;
@@ -98,7 +101,7 @@ export async function migrateMatchPayments() {
         prize                       NUMERIC(10,2),
         match_key                   TEXT,
         status                      TEXT NOT NULL DEFAULT 'pending'
-                                      CHECK (status IN ('pending','paid','refunded','expired')),
+                                      CHECK (status IN ('pending','paid','refunded','expired','credited')),
         stripe_checkout_session_id  TEXT UNIQUE,
         stripe_payment_intent_id    TEXT UNIQUE,
         checkout_url                TEXT,
@@ -112,6 +115,40 @@ export async function migrateMatchPayments() {
     `);
     await c.query(`CREATE INDEX IF NOT EXISTS match_payments_match_idx ON match_payments (match_key)`);
     await c.query(`CREATE INDEX IF NOT EXISTS match_payments_user_idx ON match_payments (user_id)`);
+
+    // Play Credit: a second, NON-cashable balance (users.play_credit) — an
+    // entry paid for a match that couldn't happen through no fault of the
+    // player becomes Play Credit (the card charge stays captured; nothing is
+    // ever refunded to a card). Play Credit only ever pays a WHOLE entry.
+    await c.query(`ALTER TABLE match_payments ADD COLUMN IF NOT EXISTS paid_with TEXT NOT NULL DEFAULT 'card'`);
+    await c.query(`ALTER TABLE match_payments ADD COLUMN IF NOT EXISTS credit_reason TEXT`);
+    await c.query(`ALTER TABLE match_payments ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ`);
+    await c.query(`DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'match_payments_status_check'
+                  AND pg_get_constraintdef(oid) NOT LIKE '%credited%') THEN
+        ALTER TABLE match_payments DROP CONSTRAINT match_payments_status_check;
+        ALTER TABLE match_payments ADD CONSTRAINT match_payments_status_check
+          CHECK (status IN ('pending','paid','refunded','expired','credited'));
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'play_credit') THEN
+        ALTER TABLE users ADD COLUMN play_credit NUMERIC(10,2) NOT NULL DEFAULT 0;
+      END IF;
+    END $$`);
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS play_credit_ledger (
+        id                SERIAL PRIMARY KEY,
+        user_id           INTEGER NOT NULL REFERENCES users(id),
+        kind              TEXT NOT NULL CHECK (kind IN ('credit','spend')),
+        delta             NUMERIC(10,2) NOT NULL,
+        balance_after     NUMERIC(10,2) NOT NULL,
+        reason            TEXT NOT NULL,
+        game              TEXT,
+        match_payment_id  INTEGER REFERENCES match_payments(id),
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (match_payment_id, kind)
+      )
+    `);
+    await c.query(`CREATE INDEX IF NOT EXISTS play_credit_ledger_user_idx ON play_credit_ledger (user_id)`);
     await c.query("COMMIT");
     console.log("[entry-fees] match_payments table ready");
   } catch (e) {
@@ -144,6 +181,9 @@ export async function openPayment(p: {
   const row: PaymentRow = (await pool.query(`SELECT * FROM match_payments WHERE attempt_id = $1 AND user_id = $2`, [p.attemptId, p.userId])).rows[0];
   if (row.amount_cents !== p.amountCents) throw new Error(`payment ${row.id}: amount changed mid-attempt`);
   if (row.checkout_url) return { url: row.checkout_url, row };
+  // Already settled (e.g. paid with Play Credit a moment ago): never open a
+  // card Checkout for it.
+  if (row.status !== "pending") return { url: "", row };
 
   const meta = { game: p.game, attempt_id: p.attemptId, user_id: String(p.userId), payment_row: String(row.id) };
   const session = await s.checkout.sessions.create({
@@ -178,44 +218,106 @@ export async function attachMatch(attemptId: string, matchKey: string, sessionsG
   await pool.query(`UPDATE match_payments SET match_key = $2 WHERE attempt_id = $1 AND status = 'paid'`, [attemptId, matchKey]);
   await pool.query(
     `INSERT INTO sessions (game, mode, amount, stripe_payment_id, user_id)
-     SELECT $2, 'multiplayer', amount_cents / 100.0, stripe_payment_intent_id, user_id
-       FROM match_payments WHERE attempt_id = $1 AND status = 'paid' AND stripe_payment_intent_id IS NOT NULL
+     SELECT $2, 'multiplayer', amount_cents / 100.0, COALESCE(stripe_payment_intent_id, 'credit:' || id), user_id
+       FROM match_payments WHERE attempt_id = $1 AND status = 'paid'
      ON CONFLICT (stripe_payment_id) DO NOTHING`,
     [attemptId, sessionsGame]
   ).catch(e => console.error(`[entry-fees] couldn't log entries of ${matchKey} in sessions (payments are unaffected):`, e));
 }
 
-/** Refund one paid row (idempotent: Stripe key per row; only 'paid' rows move). */
-export async function refundRow(row: PaymentRow, reason: string): Promise<boolean> {
-  const s = stripe();
-  if (!s || !row.stripe_payment_intent_id) return false;
+/**
+ * No-fault: this paid entry's match can't happen (the other player didn't
+ * pay in time / left before paying, a payment landed after the window, the
+ * match couldn't start, a restart). The amount becomes the player's PLAY
+ * CREDIT — the card charge stays captured, nothing goes back to the card and
+ * nothing goes to the winnings balance. Exactly once per row: the row moves
+ * paid → credited in the same transaction as the credit and its ledger line.
+ */
+export async function creditRow(row: PaymentRow, reason: string): Promise<boolean> {
+  const c = await pool.connect();
   try {
-    const refund = await s.refunds.create(
-      { payment_intent: row.stripe_payment_intent_id, metadata: { payment_row: String(row.id), reason } },
-      { idempotencyKey: `refund:${row.id}` }
+    await c.query("BEGIN");
+    const upd = await c.query(
+      `UPDATE match_payments SET status = 'credited', credit_reason = $2, credited_at = now()
+        WHERE id = $1 AND status = 'paid' AND match_key IS NULL RETURNING *`,
+      [row.id, reason]
     );
-    const r = await pool.query(
-      `UPDATE match_payments SET status = 'refunded', stripe_refund_id = $2, refund_reason = $3, refunded_at = now()
-        WHERE id = $1 AND status = 'paid'`,
-      [row.id, refund.id, reason]
+    if (!upd.rowCount) { await c.query("ROLLBACK"); return false; }
+    const r = upd.rows[0];
+    const amount = (r.amount_cents / 100).toFixed(2);
+    const bal = await c.query(
+      `UPDATE users SET play_credit = COALESCE(play_credit, 0) + $2::numeric WHERE id = $1 RETURNING play_credit`,
+      [r.user_id, amount]
     );
-    console.log(`[entry-fees] refunded payment ${row.id} (user ${row.user_id}, ${row.amount_cents}¢, ${reason})${r.rowCount ? "" : " — already marked"}`);
+    await c.query(
+      `INSERT INTO play_credit_ledger (user_id, kind, delta, balance_after, reason, game, match_payment_id)
+       VALUES ($1, 'credit', $2::numeric, $3, $4, $5, $6)`,
+      [r.user_id, amount, bal.rows[0].play_credit, reason, r.game, r.id]
+    );
+    await c.query("COMMIT");
+    console.log(`[entry-fees] payment ${r.id}: $${amount} → Play Credit for user ${r.user_id} (${reason}); balance $${bal.rows[0].play_credit}`);
     return true;
   } catch (e) {
-    console.error(`[entry-fees] REFUND FAILED for payment ${row.id} (user ${row.user_id}, ${row.amount_cents}¢, ${reason}) — refund it by hand in Stripe:`, e);
+    await c.query("ROLLBACK").catch(() => {});
+    console.error(`[entry-fees] PLAY CREDIT FAILED for payment ${row.id} (user ${row.user_id}, ${row.amount_cents}¢, ${reason}) — the recovery sweep retries; add it by hand if it keeps failing:`, e);
     return false;
+  } finally {
+    c.release();
   }
 }
 
 /**
- * The attempt won't become a match: close the Checkouts still open and
- * refund whoever already paid. A Checkout that can't be closed because it
- * just completed is left alone — its webhook arrives, finds the attempt gone
- * and refunds it then.
+ * Pay this entry with Play Credit — only if the player's Play Credit covers
+ * the WHOLE entry (never split with a card), and only if they have no payment
+ * yet for this attempt. Deducts exactly the entry, writes the payment row as
+ * paid (paid_with 'credit') and the ledger line, in one transaction. Returns
+ * the paid row, or null (not enough credit / already a payment): the normal
+ * card flow then goes ahead with the credit untouched.
  */
-export async function cancelAttempt(attemptId: string, reason: string): Promise<{ refunded: number[] }> {
+export async function payWithCredit(p: { game: Game; attemptId: string; userId: number; amountCents: number; prize: string }): Promise<PaymentRow | null> {
+  const c = await pool.connect();
+  try {
+    await c.query("BEGIN");
+    const existing = await c.query(`SELECT 1 FROM match_payments WHERE attempt_id = $1 AND user_id = $2`, [p.attemptId, p.userId]);
+    if (existing.rowCount) { await c.query("ROLLBACK"); return null; }
+    const amount = (p.amountCents / 100).toFixed(2);
+    const bal = await c.query(
+      `UPDATE users SET play_credit = play_credit - $2::numeric
+        WHERE id = $1 AND COALESCE(play_credit, 0) >= $2::numeric RETURNING play_credit`,
+      [p.userId, amount]
+    );
+    if (!bal.rowCount) { await c.query("ROLLBACK"); return null; }
+    const ins = await c.query(
+      `INSERT INTO match_payments (game, attempt_id, user_id, amount_cents, prize, status, paid_with, paid_at)
+       VALUES ($1, $2, $3, $4, $5::numeric, 'paid', 'credit', now()) RETURNING *`,
+      [p.game, p.attemptId, p.userId, p.amountCents, p.prize]
+    );
+    await c.query(
+      `INSERT INTO play_credit_ledger (user_id, kind, delta, balance_after, reason, game, match_payment_id)
+       VALUES ($1, 'spend', $2::numeric, $3, 'entry', $4, $5)`,
+      [p.userId, `-${amount}`, bal.rows[0].play_credit, p.game, ins.rows[0].id]
+    );
+    await c.query("COMMIT");
+    console.log(`[entry-fees] payment ${ins.rows[0].id}: user ${p.userId} paid the $${amount} entry with Play Credit (left $${bal.rows[0].play_credit})`);
+    return ins.rows[0];
+  } catch (e) {
+    await c.query("ROLLBACK").catch(() => {});
+    console.error(`[entry-fees] Play Credit payment failed for user ${p.userId} (attempt ${p.attemptId}) — card flow instead:`, e);
+    return null;
+  } finally {
+    c.release();
+  }
+}
+
+/**
+ * The attempt won't become a match: close the Checkouts still open; whoever
+ * already paid gets it as Play Credit. A Checkout that can't be closed because
+ * it just completed is left alone — its webhook arrives, finds the attempt
+ * gone and credits it then.
+ */
+export async function cancelAttempt(attemptId: string, reason: string): Promise<{ credited: number[] }> {
   const s = stripe();
-  const refunded: number[] = [];
+  const credited: number[] = [];
   for (const row of await attemptRows(attemptId)) {
     if (row.status === "pending") {
       try {
@@ -225,10 +327,10 @@ export async function cancelAttempt(attemptId: string, reason: string): Promise<
         console.log(`[entry-fees] payment ${row.id}: Checkout not closed (${e?.message || e}) — its webhook will settle it`);
       }
     } else if (row.status === "paid" && !row.match_key) {
-      if (await refundRow(row, reason)) refunded.push(row.user_id);
+      if (await creditRow(row, reason)) credited.push(row.user_id);
     }
   }
-  return { refunded };
+  return { credited };
 }
 
 // ── Webhook ──────────────────────────────────────────────────────────────────
@@ -236,7 +338,7 @@ export async function cancelAttempt(attemptId: string, reason: string): Promise<
 /**
  * Who handles a confirmed payment: the lobby, if the attempt is still being
  * collected. Returns false when the attempt is gone (cancelled, restarted)
- * — the payment is then refunded.
+ * — the payment then becomes Play Credit.
  */
 type PaidHandler = (row: PaymentRow) => boolean;
 let paidHandler: PaidHandler = () => false;
@@ -294,8 +396,8 @@ async function settlePaid(game: Game, cs: Stripe.Checkout.Session) {
   console.log(`[entry-fees] payment ${paid.id} confirmed: user ${paid.user_id}, ${paid.amount_cents}¢, attempt ${paid.attempt_id}`);
   if (!paidHandler(paid)) {
     // Paid for an attempt that no longer exists (window closed, server
-    // restarted): no match will come of it — a system case, refunded.
-    await refundRow(paid, "attempt_gone");
+    // restarted): no match will come of it — a no-fault case: Play Credit.
+    await creditRow(paid, "attempt_gone");
   }
 }
 
@@ -304,14 +406,14 @@ async function settlePaid(game: Game, cs: Stripe.Checkout.Session) {
 /**
  * Money taken with no match: paid rows of this game that never got a match
  * key, older than the payment window (+ grace), whose attempt isn't live —
- * refunded. Old pending rows are closed. Runs at boot and every minute.
+ * become Play Credit. Old pending rows are closed. Runs at boot and every minute.
  */
 export async function recoverStranded(game: Game, isLive: (attemptId: string) => boolean) {
   const cutoff = `${Math.ceil((PAY_WINDOW_MS + 120_000) / 1000)} seconds`;
   const paid: PaymentRow[] = (await pool.query(
     `SELECT * FROM match_payments WHERE game = $1 AND status = 'paid' AND match_key IS NULL
         AND paid_at < now() - $2::interval`, [game, cutoff])).rows;
-  for (const row of paid) if (!isLive(row.attempt_id)) await refundRow(row, "no_match_recovery");
+  for (const row of paid) if (!isLive(row.attempt_id)) await creditRow(row, "no_match_recovery");
   const stale: PaymentRow[] = (await pool.query(
     `SELECT * FROM match_payments WHERE game = $1 AND status = 'pending' AND created_at < now() - $2::interval`, [game, cutoff])).rows;
   const s = stripe();
