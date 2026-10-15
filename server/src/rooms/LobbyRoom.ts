@@ -92,12 +92,22 @@ interface PaymentWindow {
 }
 
 // What a player who paid hears when the match can't happen (their entry
-// becomes Play Credit).
+// becomes Refund Balance).
 const NO_FAULT_WHY: Record<string, string> = {
-  payment_timeout: "Your opponent didn't pay in time",
-  left_before_start: "Your opponent left before the match started",
-  match_start_failed: "The match couldn't start",
-  system_error: "The match couldn't start",
+  payment_timeout: "Your opponent didn't pay, so the match was cancelled.",
+  left_before_start: "Your opponent left before paying, so the match was cancelled.",
+  match_start_failed: "The match couldn't start, so it was cancelled.",
+  system_error: "The match couldn't start, so it was cancelled.",
+  lobby_closed: "The match lobby closed, so the match was cancelled.",
+};
+// …and what the player who wasn't refunded hears (in a timeout that's the
+// player who didn't pay).
+const NO_FAULT_OTHER: Record<string, string> = {
+  payment_timeout: "You didn't pay in time — the match didn't start.",
+  left_before_start: "Your opponent left — the match didn't start.",
+  match_start_failed: "The match couldn't start.",
+  system_error: "The match couldn't start.",
+  lobby_closed: "The match lobby closed — the match didn't start.",
 };
 
 const ROOM_NAME_MAX = 24;      // same as Puz Royale's room name field
@@ -163,7 +173,7 @@ export class LobbyRoom extends Room {
   onCreate() {
     this.sweepTimer = setInterval(() => this.sweep(), SWEEP_MS);
     // Entry fees: payments the webhook confirms come here; money left with no
-    // match (a restart mid-window) becomes Play Credit at boot and every minute.
+    // match (a restart mid-window) becomes Refund Balance at boot and every minute.
     onPaymentConfirmed(row => this.paymentConfirmed(row));
     const recover = () => recoverStranded("pong", id => this.liveAttempt(id) !== null)
       .catch(e => console.error("[entry-fees] recovery sweep failed:", e));
@@ -606,7 +616,7 @@ export class LobbyRoom extends Room {
   // then send this player to their own Stripe Checkout — the amount is from
   // prizes.ts, nothing from the page. Pressing Ready again reuses it.
   // One READY at a time per player: a second tap while the first is still
-  // being handled (Play Credit or opening the Checkout) does nothing.
+  // being handled (Refund Balance or opening the Checkout) does nothing.
   private payingNow = new Set<number>();
   private async readyToPay(client: Client, room: LobbyRoomData, pd: PlayerData) {
     if (this.payingNow.has(pd.userId)) return;
@@ -625,7 +635,7 @@ export class LobbyRoom extends Room {
     if (!pw) pw = this.openPaymentWindow(room, agreed);
     let url = pw.urls.get(pd.userId);
     if (!url) {
-      // Play Credit covers the WHOLE entry? Then it pays — nothing is charged
+      // Refund Balance covers the WHOLE entry? Then it pays — nothing is charged
       // to the card. Less than the entry: credit untouched, card as normal.
       const byCredit = await payWithCredit({ game: "pong", attemptId: pw.attemptId, userId: pd.userId, amountCents: pw.amountCents, prize: prizeAmount(pw.prize) });
       if (byCredit) {
@@ -633,7 +643,7 @@ export class LobbyRoom extends Room {
           await creditRow(byCredit, 'attempt_gone');   // window closed meanwhile: the credit goes back
           return;
         }
-        client.send('room:pay:credit', { message: `Entry $${pw.entry} — paid with your Play Credit.` });
+        client.send('room:pay:credit', { message: `Entry $${pw.entry} — paid from your Refund Balance.` });
         return;
       }
       const base = (process.env.BASE_URL || '').replace(/\/$/, '');
@@ -656,7 +666,7 @@ export class LobbyRoom extends Room {
 
   // The payment window: the agreed prize is locked and both players have
   // PAY_WINDOW_MS (3 min) from the first Ready to pay; if either doesn't, any
-  // entry paid becomes Play Credit.
+  // entry paid becomes Refund Balance.
   private openPaymentWindow(room: LobbyRoomData, prize: Prize): PaymentWindow {
     const entry = entryFeeFor(prize);
     const pw: PaymentWindow = {
@@ -671,7 +681,7 @@ export class LobbyRoom extends Room {
     }, PAY_WINDOW_MS);
     console.log(`[entry-fees] room ${room.code}: payment window ${pw.attemptId} — $${pw.entry} each for the $${prize} prize`);
     const secs = Math.round(PAY_WINDOW_MS / 1000);
-    const line = { player: '', content: `Entry $${pw.entry} each for the $${prize} prize. You both have ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')} to press Ready and pay — if either doesn't, any entry paid comes back as Play Credit.`, system: true as const };
+    const line = { player: '', content: `Entry $${pw.entry} each for the $${prize} prize. You both have ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')} to press Ready and pay — if either doesn't, any entry paid is refunded to your Refund Balance.`, system: true as const };
     this.pushChat(room, line);
     this.sendToRoom(room, 'room:talk', line);
     this.sendToRoom(room, 'room:state', serializeRoom(room));
@@ -695,7 +705,7 @@ export class LobbyRoom extends Room {
   }
 
   // Stripe's webhook confirmed a payment. false = no live window for it (the
-  // caller turns it into Play Credit).
+  // caller turns it into Refund Balance).
   private paymentConfirmed(row: PaymentRow): boolean {
     if (row.game !== "pong") return false;
     const room = this.liveAttempt(row.attempt_id);
@@ -718,7 +728,7 @@ export class LobbyRoom extends Room {
   }
 
   // The window ends without a match: unpaid Checkouts closed; anyone who paid
-  // gets it as Play Credit (the match couldn't happen through no fault of
+  // gets it as Refund Balance (the match couldn't happen through no fault of
   // theirs) — told as a perk, never a refund.
   private async cancelPaymentWindow(room: LobbyRoomData, message: string, reason: string) {
     const pw = room.payment;
@@ -731,32 +741,32 @@ export class LobbyRoom extends Room {
     try {
       ({ credited } = await cancelAttempt(pw.attemptId, reason));
     } catch (e) {
-      console.error(`[entry-fees] cancelling ${pw.attemptId} failed — the recovery sweep will turn any payment into Play Credit:`, e);
+      console.error(`[entry-fees] cancelling ${pw.attemptId} failed — the recovery sweep will turn any payment into Refund Balance:`, e);
     }
     console.log(`[entry-fees] room ${room.code}: window ${pw.attemptId} cancelled (${reason})`);
     this.tellNoFault(room, message, reason, pw.entry, credited);
   }
 
-  // The no-fault messages: a player who paid hears about their Play Credit;
+  // The no-fault messages: a player who paid hears about their Refund Balance;
   // everyone else just that the match didn't start.
   private tellNoFault(room: LobbyRoomData, message: string, reason: string, entry: string, credited: number[]) {
     if (!this.lobbyRooms[room.code]) return;
-    const why = NO_FAULT_WHY[reason] || "The match couldn't start";
-    const plain = `${message} — the match didn't start.`;
-    const line = { player: '', content: plain + (credited.length ? ' Any entry paid is now Play Credit.' : ''), system: true as const };
+    const why = NO_FAULT_WHY[reason] || "The match couldn't start, so it was cancelled.";
+    const other = NO_FAULT_OTHER[reason] || `${message} — the match didn't start.`;
+    const line = { player: '', content: `${message} — the match didn't start.` + (credited.length ? " Any entry paid has been refunded to that player's Refund Balance." : ''), system: true as const };
     this.pushChat(room, line);
     this.sendToRoom(room, 'room:talk', line);
     for (const p of Object.values(room.players)) {
       const c = this.clients.find(cl => cl.sessionId === p.id);
       c?.send('room:pay:cancelled', {
-        message: credited.includes(p.userId) ? `${why} — we've added $${entry} Play Credit to your account to jump into another match.` : plain,
+        message: credited.includes(p.userId) ? `${why} Your $${entry} has been refunded to your Refund Balance — use it to enter another game at the same price.` : other,
       });
     }
     this.sendToRoom(room, 'room:state', serializeRoom(room));
   }
 
   // Start the match room. pw: the paid window it comes from (null: entry fees
-  // off). A failure after both paid is a system error: both get Play Credit.
+  // off). A failure after both paid is a system error: both get Refund Balance.
   private async launchMatch(room: LobbyRoomData, agreed: Prize, pw: PaymentWindow | null, client: Client | null) {
     const players = Object.values(room.players);
     room.started = true; // no second launch while the match room is being created
