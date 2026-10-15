@@ -217,7 +217,7 @@ td.room-enter{text-align:right;}
       </div>
 
       <!-- Entry fees: the payment window after the host's Start (server: entryPayments.ts) -->
-      <div class="pay-box" id="pay-box"><div id="pay-text"></div><a class="pay-btn" id="btn-pay" href="#" style="display:none"></a><div class="pay-paid" id="pay-paid" style="display:none">✓ Your entry is paid</div><div class="pay-sub" id="pay-sub"></div></div>
+      <div class="pay-box" id="pay-box"><div id="pay-text"></div><div class="pay-paid" id="pay-paid" style="display:none">✓ You've paid — you're ready</div><div class="pay-sub" id="pay-sub"></div></div>
       <div class="rematch-box" id="rematch-box"><span id="rematch-text"></span><button id="btn-rematch" style="display:none">REMATCH</button></div>
 
       <p class="players-count" id="players-count">No players</p>
@@ -436,28 +436,32 @@ socket.on('room:rematch', ({accepted,cancelled})=>{
   if(accepted){ sysMsg('Rematch on!'); status('Rematch on — agree on the prize and press Ready.','ok'); }
   if(cancelled){ sysMsg(cancelled); setConnNotice(cancelled); status(cancelled,'err'); }
 });
-// Entry fees: after the host's Start each player pays their entry on Stripe's
-// page (same tab — this page rejoins the seat when they come back). The amount
-// and the link come from the server; the match starts once Stripe has
-// confirmed both payments.
+// Entry fees: READY is paying. Pressing it sends this page to the player's
+// own Stripe Checkout (same tab — the page rejoins the seat when they come
+// back); they show as ready (tick) once Stripe has confirmed the payment, and
+// the match starts when both have. The amount and the link come from the
+// server. The first Ready starts the clock for both players.
 let payInfo=null;
-socket.on('room:pay', p=>{ payInfo=p; renderPay(); updateActions(); });
+socket.on('room:pay', p=>{
+  payInfo=p; renderPay(); updateActions();
+  if(p.go && p.url){ status('Opening secure payment…','ok'); window.location.href=p.url; }
+});
 socket.on('room:pay:cancelled', ({message})=>{ payInfo=null; renderPay(); updateActions(); setConnNotice(message); status(message,'err'); });
-document.getElementById('btn-pay').onclick=()=>status('Opening secure payment…','ok');
+function mmss(sec){ return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'); }
 function renderPay(){
   const box=document.getElementById('pay-box'), pw=myRoom&&myRoom.payment;
-  if(!pw || !payInfo){ box.style.display='none'; return; }
+  if(!pw){ box.style.display='none'; return; }
   box.style.display='block';
-  document.getElementById('pay-text').textContent='Entry: $'+payInfo.entry+' each for the $'+payInfo.prize+' prize. The match starts as soon as both entries are paid.';
-  const btn=document.getElementById('btn-pay');
-  if(!payInfo.paid && payInfo.url){ btn.href=payInfo.url; btn.textContent='PAY $'+payInfo.entry+' →'; btn.style.display='inline-block'; }
-  else btn.style.display='none';
-  document.getElementById('pay-paid').style.display=payInfo.paid?'inline-block':'none';
-  const left=Math.max(0,Math.ceil((payInfo.deadline-Date.now())/1000));
+  const left=Math.max(0,Math.ceil((pw.deadline-Date.now())/1000));
+  const iPaid=(pw.paid||[]).includes(socket.id);
+  document.getElementById('pay-text').textContent='You and your opponent have '+mmss(left)+' to pay — if either of you doesn\'t, any entry paid is refunded.';
+  document.getElementById('pay-paid').style.display=iPaid?'inline-block':'none';
   const waiting=(pw.waiting||[]).filter(n=>n!==myName);
-  document.getElementById('pay-sub').textContent=(waiting.length?'Waiting for '+waiting.join(', ')+' · ':'')+left+'s left';
+  document.getElementById('pay-sub').textContent=iPaid
+    ? (waiting.length?'Waiting for '+waiting.join(', ')+' to pay…':'Both paid — starting the match…')
+    : 'Entry $'+pw.entry+' for the $'+pw.prize+' prize — press READY to pay.';
 }
-setInterval(()=>{ if(payInfo) renderPay(); },1000);
+setInterval(()=>{ if(myRoom && myRoom.payment) renderPay(); },1000);
 // Back from Stripe's page (the seat is rejoined as usual).
 (function(){
   const q=new URLSearchParams(location.search), paid=q.get('paid');
@@ -523,13 +527,14 @@ function renderPlayers(room) {
   players.forEach((p,i)=>{
     const tr=document.createElement('tr');
     const isMe=p.id===socket.id;
-    const away=p.away?' <span class="ready-badge ready-no" style="color:#FFB400;border-color:rgba(255,180,0,0.4);">Away</span>':'';
+    // During the payment window a player who isn't here is on Stripe's page.
+    const away=p.away?' <span class="ready-badge ready-no" style="color:#FFB400;border-color:rgba(255,180,0,0.4);">'+(room.payment && !p.ready?'Paying…':'Away')+'</span>':'';
     // Each name shows the player's prize state: "Open to both" (no pick yet),
     // "Wants $X", or "Ready · $X". Only your own name gets controls: in a
     // "both" room you pick/Change your prize; in a fixed room only the host
     // can Change the room's prize.
     const badge=(p.master?'<span class="ready-badge ready-host">HOST</span>':'')
-      +prizeStateTag(p)+(isMe && !room.rematch ? prizeControls(room,p) : '')+away;
+      +prizeStateTag(p)+(isMe && !room.rematch && !room.payment ? prizeControls(room,p) : '')+away;
     // The host sees ✕ to remove the other player.
     const kick=(isMaster && !p.master)?`<button class="kick-btn" title="Remove from room" onclick="kickPlayer('${esc(p.id)}')">✕</button>`:'';
     tr.innerHTML=`
@@ -624,8 +629,22 @@ function updateActions() {
   if(!myRoom) return;
   // Pending rematch: no Ready/Start until both players have pressed Rematch.
   if(myRoom.rematch){ btnReady.style.display='none'; btnStart.style.display='none'; return; }
-  // Entries being paid: nothing to press but Pay.
-  if(myRoom.payment){ btnReady.style.display='none'; btnStart.style.display='none'; renderPay(); return; }
+  // Entry fees on: READY is paying (amount from the shared prize table, the
+  // same one the server charges from); no Start — the match starts once both
+  // have paid. Open to both: READY waits until you both want the same prize.
+  if(myRoom.entryFees){
+    const pw=myRoom.payment, agreedNow=pw?pw.prize:agreedPrize(myRoom);
+    const me=(myRoom.players||[]).find(p=>p.id===socket.id);
+    const paid=!!(me && me.ready);
+    btnStart.style.display='none';
+    btnReady.style.display='inline-block';
+    btnReady.disabled=paid || !agreedNow || (myRoom.players||[]).length<2;
+    btnReady.title=!agreedNow?((myRoom.players||[]).length<2?'Waiting for an opponent':'Agree on a prize first'):'';
+    if(paid){ btnReady.textContent='✓ Ready · $'+agreedNow; btnReady.classList.add('is-ready'); }
+    else { btnReady.textContent=agreedNow?('READY · PAY '+feeOf(agreedNow)):'READY'; btnReady.classList.remove('is-ready'); }
+    renderPay();
+    return;
+  }
   const players=myRoom.players||[];
   const hasGuest=players.length===2;
   // Ready (both players, host included) only once both want the same prize:
@@ -651,8 +670,9 @@ document.getElementById('chat-input').addEventListener('keydown',e=>{ if(e.key==
 function sendChat(){ const inp=document.getElementById('chat-input'); const content=inp.value.trim(); if(!content||!myRoom) return; socket.emit('room:talk',{content}); inp.value=''; }
 
 document.getElementById('btn-ready').onclick=()=>{
-  // No payment (testing): Ready just tells the room you're ready.
   if(isReady || !myRoom) return;
+  // Entry fees on: Ready = pay — the server answers with this player's Checkout.
+  if(myRoom.entryFees){ status('Opening secure payment…','ok'); socket.emit('room:ready'); return; }
   isReady=true; socket.emit('room:ready'); updateActions();
 };
 

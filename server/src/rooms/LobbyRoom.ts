@@ -125,6 +125,7 @@ function serializeRoom(r: LobbyRoomData) {
       names: players.filter(p => r.rematch!.by.has(p.userId)).map(p => p.name),
       waiting: players.filter(p => !r.rematch!.by.has(p.userId)).map(p => p.name),
     } : null,
+    entryFees: entryFeesRequested(),
     payment: r.payment ? {
       prize: r.payment.prize, entry: r.payment.entry, deadline: r.payment.deadline,
       paid: players.filter(p => r.payment!.paid.has(p.userId)).map(p => p.id),
@@ -289,11 +290,15 @@ export class LobbyRoom extends Room {
       this.broadcastList();
     });
 
-    this.onMessage("room:ready", (client: Client) => {
+    this.onMessage("room:ready", async (client: Client) => {
       const seat = this.seatOf(client);
       if (!seat) return;
       if (seat.room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
-      if (seat.room.started || seat.room.payment) return;
+      if (seat.room.started) return;
+      // Entry fees on: Ready IS paying — this opens (or reuses) the player's
+      // Stripe Checkout; they show as ready once Stripe confirms the payment.
+      if (entryFeesRequested()) { await this.readyToPay(client, seat.room, seat.pd); return; }
+      if (seat.room.payment) return;
       // Ready means "I accept the prize showing right now": only once both
       // players are here and want the same prize.
       if (!agreedPrize(seat.room)) {
@@ -339,6 +344,7 @@ export class LobbyRoom extends Room {
       if (!seat) return;
       const { room } = seat;
       if (room.started || room.master !== seat.pd.userId) return;
+      if (entryFeesRequested()) { client.send('room:error', { message: 'The match starts as soon as both players have paid (Ready)' }); return; }
       if (room.payment) { client.send('room:error', { message: 'Waiting for both entries to be paid' }); return; }
       if (room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
       const players = Object.values(room.players);
@@ -354,11 +360,6 @@ export class LobbyRoom extends Room {
         client.send('room:error', { message: 'Waiting for both players to be ready' }); return;
       }
 
-      if (entryFeesRequested()) {
-        if (!entryFeesReady()) { client.send('room:error', { message: 'Payments are unavailable right now — try again later' }); return; }
-        await this.openPaymentWindow(room, agreed);
-        return;
-      }
       await this.launchMatch(room, agreed, null, client);
     });
 
@@ -591,10 +592,43 @@ export class LobbyRoom extends Room {
 
   // ── Entry fees ─────────────────────────────────────────────────────────────
 
-  // The host pressed Start with entry fees on: lock the agreed prize and open
-  // a Checkout for each player — amount from prizes.ts, nothing from the page.
-  private async openPaymentWindow(room: LobbyRoomData, prize: Prize) {
-    const players = Object.values(room.players);
+  // A player pressed Ready with entry fees on: open the payment window if
+  // there isn't one (locks the agreed prize; the deadline is for BOTH to pay),
+  // then send this player to their own Stripe Checkout — the amount is from
+  // prizes.ts, nothing from the page. Pressing Ready again reuses it.
+  private async readyToPay(client: Client, room: LobbyRoomData, pd: PlayerData) {
+    if (!entryFeesReady()) { client.send('room:error', { message: 'Payments are unavailable right now — try again later' }); return; }
+    if (Object.keys(room.players).length < SEATS_PER_ROOM) { client.send('room:error', { message: 'Need a second player first' }); return; }
+    const agreed = agreedPrize(room);
+    if (!agreed) { client.send('room:error', { message: 'Agree on a prize before pressing Ready' }); return; }
+    let pw = room.payment;
+    if (pw && pw.closing) return;
+    if (pw && pw.paid.has(pd.userId)) { this.sendPayPrompt(client, room, pd.userId); return; }
+    if (!pw) pw = this.openPaymentWindow(room, agreed);
+    let url = pw.urls.get(pd.userId);
+    if (!url) {
+      const base = (process.env.BASE_URL || '').replace(/\/$/, '');
+      try {
+        ({ url } = await openPayment({
+          game: "pong", attemptId: pw.attemptId, userId: pd.userId, amountCents: pw.amountCents, prize: prizeAmount(pw.prize),
+          productName: `Pong 1v1 entry — $${pw.prize} prize`,
+          successUrl: `${base}/rooms.html?paid=1`, cancelUrl: `${base}/rooms.html?paid=0`,
+        }));
+      } catch (e) {
+        console.error(`[entry-fees] couldn't open a Checkout in room ${room.code}:`, e);
+        await this.cancelPaymentWindow(room, 'Payments are unavailable right now — try again', 'system_error');
+        return;
+      }
+      if (room.payment !== pw || pw.closing) return;   // window closed meanwhile
+      pw.urls.set(pd.userId, url);
+    }
+    this.sendPayPrompt(client, room, pd.userId, true);
+  }
+
+  // The payment window: the agreed prize is locked and both players have
+  // PAY_WINDOW_MS (90 s) from the first Ready to pay; if either doesn't, any
+  // entry paid is refunded.
+  private openPaymentWindow(room: LobbyRoomData, prize: Prize): PaymentWindow {
     const entry = entryFeeFor(prize);
     const pw: PaymentWindow = {
       attemptId: `pong-${room.code}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -602,44 +636,28 @@ export class LobbyRoom extends Room {
       urls: new Map(), paid: new Set(), timer: null, closing: false,
     };
     room.payment = pw;
-    const base = (process.env.BASE_URL || '').replace(/\/$/, '');
-    try {
-      for (const p of players) {
-        const { url } = await openPayment({
-          game: "pong", attemptId: pw.attemptId, userId: p.userId, amountCents: pw.amountCents, prize: prizeAmount(prize),
-          productName: `Pong 1v1 entry — $${prize} prize`,
-          successUrl: `${base}/rooms.html?paid=1`, cancelUrl: `${base}/rooms.html?paid=0`,
-        });
-        pw.urls.set(p.userId, url);
-      }
-    } catch (e) {
-      console.error(`[entry-fees] couldn't open payments for room ${room.code}:`, e);
-      await this.cancelPaymentWindow(room, 'Payments are unavailable right now — try again', 'system_error');
-      return;
-    }
-    if (room.payment !== pw) return;   // cancelled meanwhile (someone left)
     pw.timer = setTimeout(() => {
       const waiting = Object.values(room.players).filter(p => !pw.paid.has(p.userId)).map(p => p.name);
       void this.cancelPaymentWindow(room, `${waiting.join(' and ') || 'A player'} didn't pay in time`, 'payment_timeout');
     }, PAY_WINDOW_MS);
     console.log(`[entry-fees] room ${room.code}: payment window ${pw.attemptId} — $${pw.entry} each for the $${prize} prize`);
-    const line = { player: '', content: `Entries: $${pw.entry} each for the $${prize} prize — the match starts once both are paid.`, system: true as const };
+    const secs = Math.round(PAY_WINDOW_MS / 1000);
+    const line = { player: '', content: `Entry $${pw.entry} each for the $${prize} prize. You both have ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')} to press Ready and pay — if either doesn't, any entry paid is refunded.`, system: true as const };
     this.pushChat(room, line);
     this.sendToRoom(room, 'room:talk', line);
     this.sendToRoom(room, 'room:state', serializeRoom(room));
-    for (const p of players) {
-      const c = this.clients.find(cl => cl.sessionId === p.id);
-      if (c) this.sendPayPrompt(c, room, p.userId);
-    }
+    return pw;
   }
 
-  // This player's Checkout link (or "paid, waiting") while a window is open.
-  private sendPayPrompt(client: Client, room: LobbyRoomData, userId: number) {
+  // This player's payment state while a window is open. go: send the page to
+  // its Checkout now (the answer to their own Ready press).
+  private sendPayPrompt(client: Client, room: LobbyRoomData, userId: number, go = false) {
     const pw = room.payment;
     if (!pw || pw.closing) return;
+    const paid = pw.paid.has(userId);
     client.send('room:pay', {
       prize: pw.prize, entry: pw.entry, deadline: pw.deadline,
-      paid: pw.paid.has(userId), url: pw.paid.has(userId) ? null : pw.urls.get(userId) || null,
+      paid, url: paid ? null : pw.urls.get(userId) || null, go: go && !paid,
     });
   }
 
@@ -655,6 +673,9 @@ export class LobbyRoom extends Room {
     if (!room || !room.players[row.user_id]) return false;
     const pw = room.payment!;
     pw.paid.add(row.user_id);
+    const pd = room.players[row.user_id];
+    pd.ready = true;                                   // the ready tick = payment confirmed by Stripe
+    this.sendToRoom(room, 'room:player:ready', { player: serializePlayer(pd) });
     this.sendToRoom(room, 'room:state', serializeRoom(room));
     const c = this.clients.find(cl => cl.sessionId === room.players[row.user_id]?.id);
     if (c) this.sendPayPrompt(c, room, row.user_id);
