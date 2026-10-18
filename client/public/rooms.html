@@ -393,8 +393,18 @@ socket.on('room:rejoin:none', ()=>{
   if (myRoom) backToList();
   if (had) status('Your room has closed — create or join a new one','err');
 });
+// Reached with the browser's Back/Forward (or restored from the back/forward
+// cache)? Then the player was leaving: a live match doesn't pull this page
+// forward into it. A fresh load or a reload still goes straight back.
+let arrivedByBackForward = (((performance.getEntriesByType && performance.getEntriesByType('navigation')[0]) || {}).type === 'back_forward')
+  || !!(performance.navigation && performance.navigation.type === 2);
+window.addEventListener('pageshow', e=>{ if (e.persisted) arrivedByBackForward = true; });
 // Our account's match is still being played: back to it.
-socket.on('room:match', ({code})=>{ setConnNotice('Your match is still on — taking you back…'); remember(null); window.location.href='/pong-multiplayer.html?room='+encodeURIComponent(code); });
+socket.on('room:match', ({code})=>{
+  remember(null);
+  if (arrivedByBackForward) { setConnNotice('Your match is still on — reload this page to go back to it.'); return; }
+  setConnNotice('Your match is still on — taking you back…'); window.location.href='/pong-multiplayer.html?room='+encodeURIComponent(code);
+});
 // Our seat was opened in another tab or device: this tab steps back to the list.
 // Away longer than the seat hold: the server released our seat.
 socket.on('room:released', ({message})=>{ remember(null); backToList(); setConnNotice(message||'Your seat was released after being away too long.'); });
