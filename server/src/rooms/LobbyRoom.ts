@@ -2,7 +2,7 @@ import { Room, Client, matchMaker } from "@colyseus/core";
 import { authenticateGameToken, PongAuth } from "../auth";
 import { issueLaunchTicket } from "../launchTickets";
 import { notifyNewRoom } from "../pushNotifications";
-import { Prize, PrizeMode, asPrize, asPrizeMode, entryFeeFor, prizeAmount } from "../prizes";
+import { Prize, PrizeMode, asOfferedPrize, asOfferedPrizeMode, OFFERED_PRIZES, TEN_TIER_OFFERED, entryFeeFor, prizeAmount } from "../prizes";
 import {
   entryFeesRequested, entryFeesReady, toCents, openPayment, cancelAttempt, attachMatch, creditRow, payWithCredit,
   attemptRows, onPaymentConfirmed, recoverStranded, PAY_WINDOW_MS, PaymentRow,
@@ -129,6 +129,8 @@ function agreedPrize(r: LobbyRoomData): Prize | null {
   const players = Object.values(r.players);
   if (players.length < SEATS_PER_ROOM) return null;
   const first = players[0].pick;
+  // Only a prize on offer can be readied, paid or launched (prizes.ts TEN_TIER_OFFERED).
+  if (first && !OFFERED_PRIZES.includes(first)) return null;
   return first && players.every(p => p.pick === first) ? first : null;
 }
 
@@ -214,7 +216,7 @@ export class LobbyRoom extends Room {
       const priv = data?.open === false;
       const password = priv && typeof data?.password === 'string' ? data.password.slice(0, ROOM_PASSWORD_MAX) : '';
       if (priv && !password.trim()) { client.send('room:error', { message: 'Enter a password for a private room' }); return; }
-      const prizeMode = asPrizeMode(data?.prizeMode);
+      const prizeMode = asOfferedPrizeMode(data?.prizeMode);
       if (!prizeMode) { client.send('room:error', { message: 'Pick a prize first' }); return; }
       // One seat per account: creating a room gives up a seat held elsewhere.
       this.releaseAccountSeat(auth.userId);
@@ -283,7 +285,7 @@ export class LobbyRoom extends Room {
       let pick: Prize | null = null;
       if (room.prizeMode !== 'both') pick = Number(room.prizeMode) as Prize;
       else if (!becomesHost) {
-        pick = asPrize(data?.prize);
+        pick = asOfferedPrize(data?.prize);
         if (!pick) { client.send('room:pick-prize', { code: room.code, message: 'The host is open to both. Pick the prize' }); return; }
       }
 
@@ -339,8 +341,8 @@ export class LobbyRoom extends Room {
       if (room.started) return;
       if (room.payment) { client.send('room:error', { message: 'The prize is locked while entries are being paid' }); return; }
       if (room.rematch) { client.send('room:error', { message: 'Waiting for both players to accept the rematch' }); return; }
-      const prize = asPrize(data?.prize);
-      if (!prize) { client.send('room:error', { message: 'Pick $5 or $10' }); return; }
+      const prize = asOfferedPrize(data?.prize);
+      if (!prize) { client.send('room:error', { message: TEN_TIER_OFFERED ? 'Pick $5 or $10' : 'Only the $5 prize is on offer' }); return; }
       if (room.prizeMode === 'both') {
         if (pd.pick === prize) return;
         pd.pick = prize;

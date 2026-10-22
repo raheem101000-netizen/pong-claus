@@ -151,6 +151,8 @@ td.room-enter{text-align:right;}
 .prize-opts{display:flex;flex-direction:column;gap:8px;}
 .prize-opt{display:flex;justify-content:space-between;align-items:center;text-align:left;padding:11px 14px;}
 .prize-opt small{font-size:11px;font-weight:500;opacity:.8;}
+/* $10 tier hidden (TEN_TIER_OFFERED in server/src/prizes.ts): [hidden] beats .prize-opt's display:flex */
+.prize-opt[hidden]{display:none;}
 .prize-opt.gold-opt.active{background:rgba(255,210,74,0.12);border-color:rgba(255,210,74,0.6);color:#FFD24A;}
 .pick-msg{font-size:13px;color:rgba(255,255,255,0.7);line-height:1.5;margin-bottom:14px;}
 .ready-prize{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.85);border:1px solid rgba(255,255,255,0.18);}
@@ -294,8 +296,8 @@ td.room-enter{text-align:right;}
     <div class="pz-field"><label>PRIZE</label>
       <div class="prize-opts" id="create-prize-opts">
         <button type="button" class="toggle-btn prize-opt" data-mode="5"><span data-win="5"></span><small data-fee="5"></small></button>
-        <button type="button" class="toggle-btn prize-opt gold-opt" data-mode="10"><span data-win="10"></span><small data-fee="10"></small></button>
-        <button type="button" class="toggle-btn prize-opt gold-opt" data-mode="both"><span>Open to both</span><small>Agree on $5 or $10 in the room</small></button>
+        <button type="button" class="toggle-btn prize-opt gold-opt" data-mode="10" data-tier10><span data-win="10"></span><small data-fee="10"></small></button>
+        <button type="button" class="toggle-btn prize-opt gold-opt" data-mode="both" data-tier10><span>Open to both</span><small>Agree on $5 or $10 in the room</small></button>
       </div>
     </div>
     <div class="pz-error-inline" id="create-error"></div>
@@ -313,7 +315,7 @@ td.room-enter{text-align:right;}
     <div class="pick-msg">The host is open to both. Pick the prize</div>
     <div class="prize-opts">
       <button type="button" class="toggle-btn prize-opt" data-pick="5"><span data-win="5"></span><small data-fee="5"></small></button>
-      <button type="button" class="toggle-btn prize-opt gold-opt" data-pick="10"><span data-win="10"></span><small data-fee="10"></small></button>
+      <button type="button" class="toggle-btn prize-opt gold-opt" data-pick="10" data-tier10><span data-win="10"></span><small data-fee="10"></small></button>
     </div>
     <div class="pz-error-inline" id="pick-error"></div>
     <div class="pz-modal-btns">
@@ -570,6 +572,10 @@ function renderPlayers(room) {
 // $5 (entry $2.99) and $10 (entry $5.99), from the server's one table (/prizes.js).
 const PRIZES = window.PONG_PRIZES || {};
 function feeOf(v){ return '$'+((PRIZES[v]||{}).entryFee||'?'); }
+// $10 tier on offer? Same flag as the server (prizes.ts TEN_TIER_OFFERED, sent in /prizes.js).
+// Off: the $10 / "Open to both" buttons are hidden and $5 is the only prize.
+const TEN_TIER=window.TEN_TIER_OFFERED===true;
+document.querySelectorAll('[data-tier10]').forEach(el=>{ el.hidden=!TEN_TIER; });
 document.querySelectorAll('[data-win]').forEach(el=>{ el.textContent='Win $'+el.dataset.win; });
 document.querySelectorAll('[data-fee]').forEach(el=>{ el.textContent='Entry '+feeOf(el.dataset.fee); });
 // The prize tag shown next to a room in the list.
@@ -586,6 +592,7 @@ function prizeStateTag(p){
 }
 function prizeControls(room,me){
   const both=room.prizeMode==='both';
+  if(!TEN_TIER) return '';   // one prize on offer: nothing to pick or change
   if(!both && !me.master) return '';
   if(both && !me.pick) return '<button class="change-btn" onclick="sendPrize(5)">$5</button><button class="change-btn" onclick="sendPrize(10)">$10</button>';
   const other=me.pick===10?5:10;
@@ -714,7 +721,7 @@ document.getElementById('btn-create').onclick=()=>{
   document.getElementById('modal-password').value='';
   document.getElementById('create-error').textContent='';
   setRoomType(true);
-  setCreatePrize(null);   // nothing preselected: the player must choose
+  setCreatePrize(TEN_TIER?null:'5');   // nothing preselected: the player must choose (only $5 on offer: it's chosen)
   closeJoinModal(); closePickModal();
   document.getElementById('modal-overlay').classList.add('open');
   setTimeout(()=>document.getElementById('modal-name').focus(),50);
