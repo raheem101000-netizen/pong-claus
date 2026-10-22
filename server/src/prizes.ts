@@ -25,6 +25,29 @@ export function asPrizeMode(v: unknown): PrizeMode | null {
   return v === "5" || v === "10" || v === "both" ? v : null;
 }
 
+// $10 TIER HIDDEN: set true to offer $5.99 → $10 (and "Open to both") again.
+// Only what a room can be created / joined / changed / paid with is limited;
+// asPrize and PRIZES above stay whole, so a match already played for $10
+// still credits, refunds and settles at $10. The page reads this same flag
+// from /prizes.js to hide the $10 buttons.
+export const TEN_TIER_OFFERED = false;
+
+export const OFFERED_PRIZES: Prize[] = TEN_TIER_OFFERED ? [5, 10] : [5];
+
+// asPrize, limited to the prizes on offer right now.
+export function asOfferedPrize(v: unknown): Prize | null {
+  const p = asPrize(v);
+  return p && OFFERED_PRIZES.includes(p) ? p : null;
+}
+
+// asPrizeMode, limited to the prizes on offer ("both" only with $10 on offer).
+export function asOfferedPrizeMode(v: unknown): PrizeMode | null {
+  const m = asPrizeMode(v);
+  if (!m) return null;
+  if (m === "both") return TEN_TIER_OFFERED ? m : null;
+  return asOfferedPrize(m) ? m : null;
+}
+
 // Credit amount for the agreed prize (what creditPongWin adds to the winner).
 export function prizeAmount(p: Prize): string {
   return PRIZES[p].prize;
@@ -38,5 +61,5 @@ export function entryFeeFor(p: Prize): string {
 
 // Served as /prizes.js so the page reads the same table.
 export function prizesClientScript(): string {
-  return `window.PONG_PRIZES = ${JSON.stringify(PRIZES)};\n`;
+  return `window.PONG_PRIZES = ${JSON.stringify(PRIZES)};\nwindow.TEN_TIER_OFFERED = ${TEN_TIER_OFFERED};\n`;
 }
