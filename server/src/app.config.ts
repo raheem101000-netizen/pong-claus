@@ -3,11 +3,23 @@ import { matchMaker } from "@colyseus/core";
 import express from "express";
 import path from "path";
 import { Pool } from "pg";
+import { timingSafeEqual } from "crypto";
 import { migrateSettledMatches } from "./settledMatches";
 import { migratePushSubscriptions } from "./pushNotifications";
 import { migrateMatchPayments, webhookHandler } from "./entryPayments";
 import { LobbyRoom } from "./rooms/LobbyRoom";
 import { GameRoom } from "./rooms/GameRoom";
+
+// Admin key for /admin/* — only from the ADMIN_KEY environment variable (the
+// same value as tenten.run's). No fallback: unset or short = every admin call refused.
+// Read per call, so a .env loaded after this module still counts.
+function adminKeyOk(given: unknown): boolean {
+    const key = process.env.ADMIN_KEY || "";
+    if (key.length < 32) { console.error("[admin] ADMIN_KEY is not set (or too short) — refused"); return false; }
+    if (typeof given !== "string") return false;
+    const a = Buffer.from(given), b = Buffer.from(key);
+    return a.length === b.length && timingSafeEqual(a, b);
+}
 import { prizesClientScript } from "./prizes";
 
 const neonPool = process.env.DATABASE_URL
@@ -60,7 +72,7 @@ export const server = defineServer({
         // Admin: list all unpaid prize claims
         app.get("/admin/prize-claims", async (req, res) => {
             res.set("Access-Control-Allow-Origin", "*");
-            if (req.query.key !== "TENTEN2025") { res.status(401).json({ error: "Unauthorized" }); return; }
+            if (!adminKeyOk(req.query.key)) { res.status(401).json({ error: "Unauthorized" }); return; }
             if (!neonPool) { res.json([]); return; }
             try {
                 const result = await neonPool.query("SELECT * FROM prize_claims WHERE paid = false AND game = 'Pong Multiplayer' ORDER BY claimed_at DESC");
@@ -71,7 +83,7 @@ export const server = defineServer({
         // Admin: mark a prize claim as paid
         app.post("/admin/mark-paid", express.json(), async (req, res) => {
             res.set("Access-Control-Allow-Origin", "*");
-            if (req.query.key !== "TENTEN2025") { res.status(401).json({ error: "Unauthorized" }); return; }
+            if (!adminKeyOk(req.query.key)) { res.status(401).json({ error: "Unauthorized" }); return; }
             if (!neonPool) { res.json({ success: false }); return; }
             try {
                 const { id } = req.body;
